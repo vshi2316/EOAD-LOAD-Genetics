@@ -19,10 +19,6 @@
 #   https://adni.bitbucket.io/reference/ucsffsx51.html
 #
 # ==============================================================================
-
-rm(list = ls())
-gc()
-
 # ==============================================================================
 # Part 1: Environment Setup
 # ==============================================================================
@@ -1213,5 +1209,6 @@ cat("Subjects with PRS:", summary_stats$N_with_PRS, "\n")
 cat("Subjects with CSF:", summary_stats$N_with_CSF, "\n")
 cat("Subjects with FreeSurfer:", summary_stats$N_with_FreeSurfer, "\n")
 cat("==============================================================================\n")
+
 
 
