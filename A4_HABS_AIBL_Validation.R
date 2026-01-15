@@ -12,17 +12,7 @@
 #   Part 7: AIBL Cox Regression and AFT Models
 #   Part 8: Visualization
 #   Part 9: Results Summary
-#
-# Methods Reference:
-#   - Multi-group SEM: lavaan with MLR estimator, FIML for missing data
-#   - Clinical utility: Firth-corrected logistic regression, DeLong AUC
-#   - AIBL survival: Cox regression and AFT with Weibull distribution
-#
 # ==============================================================================
-
-rm(list = ls())
-gc()
-
 # ==============================================================================
 # Part 1: Environment Setup
 # ==============================================================================
@@ -910,5 +900,6 @@ cat("    - results/figures/Figure_HABS_DCA.pdf\n")
 cat("\n")
 
 sessionInfo()
+
 
 
