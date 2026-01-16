@@ -1,4 +1,5 @@
 # EOAD-LOAD-Genetics
+
 # Genetic Heterogeneity of Early-Onset vs Late-Onset Alzheimer's Disease
 
 ## Repository Structure
@@ -55,15 +56,29 @@ EOAD-LOAD-Genetics/
   - Total WMH volume (ST128SV), ICV-normalized
   - Bilateral hippocampus (ST29SV + ST88SV)
   - Bilateral entorhinal cortex (ST24CV + ST83CV)
+  - Bilateral parahippocampal cortex (ST44CV + ST103CV)
+  - Bilateral lateral ventricle (ST37SV + ST96SV)
   - Hippocampal subfields (CA1: ST131HS + ST139HS, Subiculum: ST137HS + ST145HS)
+  - Subcortical structures: Amygdala (ST12SV/ST71SV), Caudate (ST16SV/ST75SV), Putamen (ST53SV/ST112SV), Pallidum (ST42SV/ST101SV), Thalamus (ST61SV/ST120SV), Accumbens (ST11SV/ST70SV)
 - **CSF Biomarkers**: AlzBio3 platform, restricted to ADNI phases 1/GO/2
   - Aβ42, total tau, phosphorylated tau
   - Amyloid positivity threshold: Aβ42 < 192 pg/mL
-- **Cox Regression**: MCI-to-dementia conversion using `coxph(Surv(Time_Years, Event) ~ PRS + covariates)`
-- **K-means Clustering**: Genetic subtype identification (k=3, silhouette validation)
+  - Derived ratios: TAU/ABETA, PTAU/ABETA
+- **Cox Regression**: MCI-to-dementia conversion using `coxph(Surv(Time_Months, Event) ~ PRS + covariates)`
+- **K-means Clustering**: Genetic subtype identification (k=3, silhouette validation, nstart=50)
+  - Biological labels: Oligo-Driven, Immune-Driven, Abeta-Driven
 - **Linear Mixed Models**: Longitudinal cognitive trajectory (MMSE, CDRSB, ADAS11, ADAS13)
-- **Age Stratification**: <70 vs ≥70 years
+  - Formula: `Cognition ~ Time_Years * PRS + Age + Sex + APOE4 + (1 + Time_Years | RID)`
+  - Optimizer: bobyqa
+- **Age Stratification**: <70 vs ≥70 years with interaction testing (PRS × Age_Centered)
 - **Covariates**: Age, sex, APOE ε4 count, education (PTEDUCAT)
+- **ggseg Brain Visualization**: Cortical surface mapping using Desikan-Killiany atlas (optional)
+- **Mechanistic Validation (Part 13)**:
+  - **WMH-PRS Association**: Validating oligodendrocyte hypothesis (log-transformed WMH ~ PRS_Oligo)
+  - **Hippocampal Subfield Specificity**: CA1, CA2/3, CA4, DG, Presubiculum, Subiculum, Fimbria, HATA
+  - **Subcortical Structure Analysis**: Age-stratified effects across 7 structures
+  - **Subtype-Specific WMH**: ANOVA comparing WMH burden across genetic subtypes
+  - **Combined Figure 7**: Multi-panel visualization using patchwork (6 panels: A-F)
 
 ### 4. External Cohort Validation (`04_External_Cohort_Validation/`)
 
@@ -76,7 +91,6 @@ EOAD-LOAD-Genetics/
   - Age groups: <70 vs ≥70 years
   - Fit indices: CFI, TLI, RMSEA, SRMR
   - Bootstrap CI: 1000 iterations for indirect effects
-
 - **HABS**: Clinical utility assessment
   - Outcome: Cognitive impairment (CDR ≥ 0.5 OR MMSE < 24)
   - Firth-corrected logistic regression
@@ -86,7 +100,6 @@ EOAD-LOAD-Genetics/
   - IDI with bootstrap (1000 iterations)
   - DCA (decision curve analysis, threshold 0.01-0.80)
   - Train/test split: 70/30 with fixed seed
-
 - **AIBL**: Survival analysis
   - Cox proportional hazards regression
   - AFT models with Weibull distribution
@@ -97,6 +110,7 @@ EOAD-LOAD-Genetics/
 ## Requirements
 
 ### R Version
+
 - R >= 4.2.0
 
 ### R Packages
@@ -107,18 +121,21 @@ install.packages(c(
   "data.table", "dplyr", "tidyr", "ggplot2", "cowplot",
   "survival", "survminer", "lme4", "lmerTest",
   "cluster", "factoextra", "pheatmap", "corrplot",
-  "pROC", "lavaan", "logistf", "PRROC"
+  "pROC", "lavaan", "logistf", "PRROC",
+  "viridis", "RColorBrewer", "patchwork"
 ))
 
 # Bioconductor packages
 if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-
+  install.packages("BiocManager")
 BiocManager::install(c(
   "bigsnpr", "WGCNA", "clusterProfiler", 
   "org.Hs.eg.db", "org.Mm.eg.db", "biomaRt",
   "TxDb.Hsapiens.UCSC.hg19.knownGene"
 ))
+
+# Optional: ggseg for brain visualization
+install.packages("ggseg")
 ```
 
 ---
@@ -217,10 +234,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-
 ## Acknowledgments
 
 Data collection and sharing for this project was funded by:
+
 - Alzheimer's Disease Neuroimaging Initiative (ADNI) (National Institutes of Health Grant U01 AG024904 and DOD ADNI W81XWH-12-2-0012)
 - FinnGen Consortium
 - European Alzheimer & Dementia Biobank (EADB) Consortium
