@@ -190,15 +190,7 @@ install.packages("ggseg")
 - Method: Diffusion MRI (dMRI) with tract-based spatial statistics
 - Access: [UK Biobank BIG40](https://open.win.ox.ac.uk/ukbiobank/big40/)
 
-### Transcriptomic Data
 
-**GSE137313 - Mouse Hippocampus Temporal RNA-seq**
-- Species: C57BL/6J wild-type mice
-- Timepoints: 8 weeks (young), 16 weeks (adult), 32 weeks (middle-aged), 72 weeks (aged)
-- Samples: N=24 (pooled across 4 timepoints)
-- Normalization: Transcripts per million (TPM)
-- PubMed ID: 32274467
-- Access: [GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE137313) | [Mouseac](http://www.mouseac.org/)
 
 ### Validation Cohorts
 
