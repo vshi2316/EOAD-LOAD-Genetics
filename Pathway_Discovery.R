@@ -15,7 +15,7 @@
 #   Part 10: Graham et al. 2025 Correct Module Definitions (5 Modules)
 #   Part 11: EOAD-Specific vs LOAD-Specific ORA Analysis
 #   Part 12: Extended Visualization
-#   Part 13: Final Results Summary
+#   Part 13: LOAD Downsampling Validation Analysis
 #
 # ==============================================================================
 
@@ -1629,83 +1629,212 @@ if (exists("extended_results") && nrow(extended_results) > 0) {
 
 
 # ==============================================================================
-# Part 13: Final Results Summary
+# Part 13: LOAD Downsampling Validation Analysis
 # ==============================================================================
 
-## Section 13.1: Comprehensive Summary
-final_summary <- list(
-  analysis_date = Sys.time(),
-  
-  wgcna = list(
-    n_modules = if(exists("wgcna_results")) length(unique(wgcna_results$moduleColors)) - 1 else NA,
-    n_genes = if(exists("wgcna_results")) ncol(wgcna_results$datExpr) else NA,
-    age_positive = if(exists("wgcna_results")) length(wgcna_results$age_positive_modules) else NA,
-    age_negative = if(exists("wgcna_results")) length(wgcna_results$age_negative_modules) else NA
-  ),
-  
-  magma = list(
-    eoad_total = if(exists("eoad_magma")) nrow(eoad_magma) else NA,
-    eoad_sig = if(exists("eoad_magma")) sum(eoad_magma$FDR < 0.05, na.rm = TRUE) else NA,
-    load_total = if(exists("load_magma")) nrow(load_magma) else NA,
-    load_sig = if(exists("load_magma")) sum(load_magma$FDR < 0.05, na.rm = TRUE) else NA
-  ),
-  
-  specific_genes = if(exists("specific_genes")) list(
-    eoad_specific = length(specific_genes$eoad_specific),
-    load_specific = length(specific_genes$load_specific),
-    shared = length(specific_genes$shared)
-  ) else NULL,
-  
-  graham_modules = if(exists("graham_correct_comparison")) list(
-    eoad_enriched = sum(graham_correct_comparison$FDR_EOAD < 0.05, na.rm = TRUE),
-    load_enriched = sum(graham_correct_comparison$FDR_LOAD < 0.05, na.rm = TRUE)
-  ) else NULL,
-  
-  extended_celltype = if(exists("extended_results")) list(
-    n_celltypes = length(unique(extended_results$CellType)),
-    eoad_sig = sum(extended_results$P_Value < 0.005 & extended_results$GWAS == "EOAD", na.rm = TRUE),
-    load_sig = sum(extended_results$P_Value < 0.005 & extended_results$GWAS == "LOAD", na.rm = TRUE)
-  ) else NULL
-)
+cat("\n================================================================================\n")
+cat("Part 13: LOAD Downsampling Validation Analysis\n")
+cat("================================================================================\n\n")
 
-saveRDS(final_summary, "results/Final_Analysis_Summary.rds")
+## Section 13.1: Load LOAD Downsampled MAGMA Results
+load_down_magma <- read_magma_results("LOAD_Downsampled.genes.out")
 
-## Section 13.2: Print Final Summary
-cat("\n")
-cat("================================================================================\n")
-cat("  EOAD vs LOAD Pathway Discovery Analysis - COMPLETE\n")
-cat("================================================================================\n")
-cat("\nAnalysis Summary:\n")
-cat("  WGCNA: ", final_summary$wgcna$n_modules, " modules from ", 
-    final_summary$wgcna$n_genes, " genes\n", sep = "")
-cat("  MAGMA EOAD: ", final_summary$magma$eoad_sig, "/", final_summary$magma$eoad_total, 
-    " FDR-significant genes\n", sep = "")
-cat("  MAGMA LOAD: ", final_summary$magma$load_sig, "/", final_summary$magma$load_total, 
-    " FDR-significant genes\n", sep = "")
-if (!is.null(final_summary$specific_genes)) {
-  cat("  Specific genes: EOAD=", final_summary$specific_genes$eoad_specific,
-      ", LOAD=", final_summary$specific_genes$load_specific,
-      ", Shared=", final_summary$specific_genes$shared, "\n", sep = "")
+if (is.null(load_down_magma)) {
+  cat("Warning: LOAD downsampled MAGMA file not found. Skipping downsampling validation.\n")
+} else {
+  
+  ## Section 13.2: Graham Module Enrichment (Downsampled)
+  if (exists("graham_modules")) {
+    load_down_graham <- data.frame()
+    for (module_name in names(graham_modules)) {
+      result <- test_module_enrichment_fisher(graham_modules[[module_name]], load_down_magma)
+      if (!is.null(result)) {
+        load_down_graham <- rbind(load_down_graham, data.frame(
+          Module = module_name,
+          GWAS = "LOAD_Downsampled",
+          N_Module = result$n_module,
+          N_Overlap = result$n_overlap,
+          OR = result$odds_ratio,
+          P_value = result$p_value
+        ))
+      }
+    }
+    
+    if (nrow(load_down_graham) > 0) {
+      load_down_graham$FDR <- p.adjust(load_down_graham$P_value, method = "BH")
+      
+      if (exists("graham_enrichment_results")) {
+        graham_full_comparison <- merge(
+          graham_enrichment_results,
+          load_down_graham[, c("Module", "N_Overlap", "OR", "P_value", "FDR")],
+          by = "Module", suffixes = c("", "_LOAD_Down"), all.x = TRUE
+        )
+        fwrite(graham_full_comparison, "results/tables/Table_Graham_Downsampling_Comparison.csv")
+      }
+    }
+  }
+  
+  ## Section 13.3: Cell Type Enrichment (Downsampled)
+  if (exists("cell_type_markers")) {
+    results_load_down <- data.frame()
+    for (ct in names(cell_type_markers)) {
+      result <- test_module_enrichment_fisher(cell_type_markers[[ct]], load_down_magma)
+      if (!is.null(result)) {
+        results_load_down <- rbind(results_load_down, data.frame(
+          Cell_Type = ct,
+          GWAS = "LOAD_Downsampled",
+          Beta = log(result$odds_ratio),
+          SE = NA,
+          P_value = result$p_value
+        ))
+      }
+    }
+    
+    if (nrow(results_load_down) > 0) {
+      results_load_down$FDR <- p.adjust(results_load_down$P_value, method = "BH")
+      
+      if (exists("celltype_results")) {
+        celltype_full_comparison <- merge(
+          celltype_results,
+          results_load_down[, c("Cell_Type", "Beta", "P_value", "FDR")],
+          by = "Cell_Type", suffixes = c("", "_LOAD_Down"), all.x = TRUE
+        )
+        fwrite(celltype_full_comparison, "results/tables/Table_CellType_Downsampling_Comparison.csv")
+      }
+    }
+  }
+  
+  ## Section 13.4: Extended Cell Type Analysis (Downsampled)
+  if (exists("extended_markers")) {
+    results_load_down_extended <- data.frame()
+    
+    for (ct in names(extended_markers)) {
+      marker_genes <- extended_markers[[ct]]
+      result <- test_module_enrichment_fisher(marker_genes, load_down_magma)
+      if (!is.null(result)) {
+        results_load_down_extended <- rbind(results_load_down_extended, data.frame(
+          Cell_Type = ct,
+          GWAS = "LOAD_Downsampled",
+          Analysis = "Unconditional",
+          Beta = log(result$odds_ratio),
+          P_value = result$p_value
+        ))
+      }
+    }
+    
+    if (nrow(results_load_down_extended) > 0) {
+      results_load_down_extended$FDR <- p.adjust(results_load_down_extended$P_value, method = "BH")
+      
+      if (exists("extended_results")) {
+        extended_full <- rbind(extended_results, results_load_down_extended)
+        fwrite(extended_full, "results/tables/Table_Extended_CellType_Downsampling.csv")
+      }
+    }
+  }
+  
+  ## Section 13.5: GSEA Pathway Analysis (Downsampled)
+  load_down_genelist <- prepare_gsea_genelist(load_down_magma)
+  
+  if (!is.null(load_down_genelist) && length(load_down_genelist) >= 1000) {
+    load_down_gsea <- run_gsea_complete(load_down_genelist, "LOAD_Downsampled")
+    
+    if (!is.null(load_down_gsea$GO_BP) && exists("load_gsea")) {
+      if (!is.null(load_gsea$GO_BP)) {
+        load_pathways <- as.data.frame(load_gsea$GO_BP@result)
+        load_down_pathways <- as.data.frame(load_down_gsea$GO_BP@result)
+        
+        pathway_retention <- data.frame(
+          Pathway = load_pathways$Description[load_pathways$p.adjust < 0.05],
+          LOAD_NES = load_pathways$NES[load_pathways$p.adjust < 0.05],
+          LOAD_FDR = load_pathways$p.adjust[load_pathways$p.adjust < 0.05]
+        )
+        
+        pathway_retention$LOAD_Down_NES <- sapply(pathway_retention$Pathway, function(p) {
+          idx <- which(load_down_pathways$Description == p)
+          if (length(idx) > 0) load_down_pathways$NES[idx[1]] else NA
+        })
+        
+        pathway_retention$LOAD_Down_FDR <- sapply(pathway_retention$Pathway, function(p) {
+          idx <- which(load_down_pathways$Description == p)
+          if (length(idx) > 0) load_down_pathways$p.adjust[idx[1]] else NA
+        })
+        
+        pathway_retention$Retained <- !is.na(pathway_retention$LOAD_Down_FDR) & 
+                                      pathway_retention$LOAD_Down_FDR < 0.05
+        
+        fwrite(pathway_retention, "results/tables/Table_Pathway_Downsampling_Retention.csv")
+      }
+    }
+  }
+  
+  ## Section 13.6: Visualization
+  if (exists("graham_full_comparison")) {
+    plot_data_long <- data.frame(
+      Module = rep(graham_full_comparison$Module, 3),
+      GWAS = rep(c("EOAD", "LOAD", "LOAD_Downsampled"), each = nrow(graham_full_comparison)),
+      OR = c(graham_full_comparison$OR_EOAD, 
+             graham_full_comparison$OR_LOAD, 
+             graham_full_comparison$OR_LOAD_Down)
+    )
+    plot_data_long$log2OR <- log2(plot_data_long$OR)
+    plot_data_long$log2OR[!is.finite(plot_data_long$log2OR)] <- 0
+    
+    p_graham <- ggplot(plot_data_long, aes(x = Module, y = log2OR, fill = GWAS)) +
+      geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7) +
+      geom_hline(yintercept = 0, linetype = "dashed") +
+      scale_fill_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5", 
+                                    "LOAD_Downsampled" = "#00A087")) +
+      labs(title = "Graham Module Enrichment: Downsampling Validation",
+           x = "Module", y = "log2(Odds Ratio)", fill = "Dataset") +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave("results/figures/Figure_Graham_Downsampling_Comparison.pdf", 
+           p_graham, width = 12, height = 6)
+  }
+  
+  if (exists("celltype_full_comparison")) {
+    plot_data_long <- data.frame(
+      Cell_Type = rep(celltype_full_comparison$Cell_Type, 3),
+      GWAS = rep(c("EOAD", "LOAD", "LOAD_Downsampled"), each = nrow(celltype_full_comparison)),
+      Beta = c(celltype_full_comparison$Beta_EOAD, 
+               celltype_full_comparison$Beta_LOAD, 
+               celltype_full_comparison$Beta_LOAD_Down)
+    )
+    
+    p_celltype <- ggplot(plot_data_long, aes(x = Cell_Type, y = Beta, fill = GWAS)) +
+      geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7) +
+      geom_hline(yintercept = 0, linetype = "dashed") +
+      scale_fill_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5", 
+                                    "LOAD_Downsampled" = "#00A087")) +
+      labs(title = "Cell Type Enrichment: Downsampling Validation",
+           x = "Cell Type", y = "Enrichment (Beta)", fill = "Dataset") +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave("results/figures/Figure_CellType_Downsampling_Comparison.pdf", 
+           p_celltype, width = 10, height = 6)
+  }
+  
+  ## Section 13.7: Summary
+  downsampling_summary <- list(
+    analysis_date = Sys.time(),
+    sample_sizes = list(
+      EOAD = "n=1,573",
+      LOAD = "n=111,326",
+      LOAD_Downsampled = "n=1,573"
+    )
+  )
+  
+  saveRDS(downsampling_summary, "results/Downsampling_Validation_Summary.rds")
+  
+  cat("\n================================================================================\n")
+  cat("Part 13: Downsampling Validation Complete\n")
+  cat("================================================================================\n\n")
 }
-cat("\nOutput Files:\n")
-cat("  Tables:\n")
-cat("    - Table_WGCNA_Module_Assignment.csv\n")
-cat("    - Table_Module_MAGMA_Enrichment.csv\n")
-cat("    - Table_Graham_Correct_Module_Comparison.csv\n")
-cat("    - Table_GSEA_Pathway_Comparison.csv\n")
-cat("    - Table_CellType_MAGMA_Comparison.csv\n")
-cat("    - Table_Extended_CellType_Analysis.csv\n")
-cat("    - Table_EOAD_Specific_ORA.csv\n")
-cat("    - Table_LOAD_Specific_ORA.csv\n")
-cat("  Figures:\n")
-cat("    - Figure_WGCNA_ModuleTrait_Heatmap.pdf\n")
-cat("    - Figure_Graham_Correct_Modules.pdf\n")
-cat("    - Figure_GSEA_Pathway_Comparison.pdf\n")
-cat("    - Figure_CellType_Enrichment.pdf\n")
-cat("    - Figure_Conditional_Regression_Forest.pdf\n")
-cat("    - Figure_Extended_CellType_Heatmap.pdf\n")
-cat("    - Figure_Specific_Genes_Barplot.pdf\n")
-cat("\n")
+
+cat("\n================================================================================\n")
+cat("Analysis Complete!\n")
+cat("================================================================================\n\n")
 
 sessionInfo()
-
