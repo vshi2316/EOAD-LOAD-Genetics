@@ -1,0 +1,252 @@
+# ==============================================================================
+# LOAD GWAS Downsampling Analysis
+# Sample-Size-Matched Validation (50 Iterations)
+# ==============================================================================
+
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+dir.create("results/", showWarnings = FALSE)
+dir.create("results/downsampling/", showWarnings = FALSE)
+
+# ==============================================================================
+# Section 1: Load GWAS Summary Statistics
+# ==============================================================================
+
+cat("\n================================================================================\n")
+cat("LOAD Downsampling Analysis\n")
+cat("================================================================================\n\n")
+
+eoad_gwas <- fread("EOAD_GWAS.txt.gz")
+load_gwas <- fread("LOAD_GWAS.txt.gz")
+
+eoad_gwas <- eoad_gwas %>%
+  mutate(Z = beta / se,
+         N = n_cases + n_controls) %>%
+  select(CHR, BP, SNP, effect_allele, other_allele, eaf, beta, se, pval, Z, N)
+
+load_gwas <- load_gwas %>%
+  mutate(Z = beta / se,
+         N = n_cases + n_controls) %>%
+  select(CHR, BP, SNP, effect_allele, other_allele, eaf, beta, se, pval, Z, N)
+
+# ==============================================================================
+# Section 2: Define Sample Size Parameters
+# ==============================================================================
+
+N_case_EOAD <- 1573
+N_control_EOAD <- 199505
+
+N_case_LOAD_clinical <- 39106
+N_case_LOAD_proxy <- 46828
+N_case_LOAD_effective <- round(N_case_LOAD_clinical + 0.5 * N_case_LOAD_proxy)
+N_control_LOAD <- 401577
+
+N_case_target <- N_case_EOAD
+N_control_target <- N_control_EOAD
+
+# ==============================================================================
+# Section 3: Downsampling Function
+# ==============================================================================
+
+downsample_gwas <- function(gwas_data, N_case_original, N_control_original,
+                             N_case_target, N_control_target, seed = NULL) {
+  
+  if (!is.null(seed)) set.seed(seed)
+  
+  N_eff_original <- 4 / (1/N_case_original + 1/N_control_original)
+  N_eff_target <- 4 / (1/N_case_target + 1/N_control_target)
+  
+  rho <- sqrt(N_eff_target / N_eff_original)
+  
+  n_snps <- nrow(gwas_data)
+  epsilon <- rnorm(n_snps, mean = 0, sd = 1)
+  
+  Z_downsampled <- gwas_data$Z * rho + epsilon * sqrt(1 - rho^2)
+  pval_downsampled <- 2 * pnorm(-abs(Z_downsampled))
+  
+  list(
+    Z = Z_downsampled,
+    pval = pval_downsampled,
+    scale_factor = rho,
+    noise_sd = sqrt(1 - rho^2)
+  )
+}
+
+# ==============================================================================
+# Section 4: Perform 50 Downsampling Iterations
+# ==============================================================================
+
+cat("\nPerforming 50 downsampling iterations...\n")
+
+n_snps <- nrow(load_gwas)
+n_iterations <- 50
+
+Z_matrix <- matrix(NA, nrow = n_snps, ncol = n_iterations)
+downsampling_info <- data.frame()
+
+for (iter in 1:n_iterations) {
+  
+  result <- downsample_gwas(
+    gwas_data = load_gwas,
+    N_case_original = N_case_LOAD_effective,
+    N_control_original = N_control_LOAD,
+    N_case_target = N_case_target,
+    N_control_target = N_control_target,
+    seed = 12345 + iter
+  )
+  
+  Z_matrix[, iter] <- result$Z
+  
+  n_sig <- sum(result$pval < 5e-8, na.rm = TRUE)
+  
+  downsampling_info <- rbind(downsampling_info, data.frame(
+    iteration = iter,
+    scale_factor = result$scale_factor,
+    noise_sd = result$noise_sd,
+    n_snps = n_snps,
+    n_sig_5e8 = n_sig
+  ))
+  
+  if (iter %% 10 == 0) {
+    cat(sprintf("  Completed %d/%d iterations\n", iter, n_iterations))
+    gc()
+  }
+}
+
+cat(sprintf("\nMean significant SNPs: %.1f ± %.1f (SD)\n", 
+            mean(downsampling_info$n_sig_5e8),
+            sd(downsampling_info$n_sig_5e8)))
+
+# ==============================================================================
+# Section 5: Compute SNP-Level Summary Statistics
+# ==============================================================================
+
+snp_summary <- data.table(
+  SNP = load_gwas$SNP,
+  CHR = load_gwas$CHR,
+  BP = load_gwas$BP,
+  effect_allele = load_gwas$effect_allele,
+  other_allele = load_gwas$other_allele,
+  Z_original = load_gwas$Z,
+  Z_mean = rowMeans(Z_matrix, na.rm = TRUE),
+  Z_sd = apply(Z_matrix, 1, sd, na.rm = TRUE),
+  n_sig_5e8 = rowSums(abs(Z_matrix) > qnorm(1 - 5e-8/2), na.rm = TRUE)
+)
+
+snp_summary[, pval_mean := 2 * pnorm(-abs(Z_mean))]
+
+fwrite(snp_summary, "results/downsampling/SNP_summary_50iterations.txt", sep = "\t")
+fwrite(downsampling_info, "results/downsampling/iteration_summary.txt", sep = "\t")
+
+# ==============================================================================
+# Section 6: Save Representative GWAS Files
+# ==============================================================================
+
+representative_iters <- c(1, 25, 50)
+
+for (iter in representative_iters) {
+  
+  gwas_out <- data.table(
+    CHR = load_gwas$CHR,
+    BP = load_gwas$BP,
+    SNP = load_gwas$SNP,
+    effect_allele = load_gwas$effect_allele,
+    other_allele = load_gwas$other_allele,
+    eaf = load_gwas$eaf,
+    beta = load_gwas$beta,
+    se = load_gwas$se / mean(downsampling_info$scale_factor),
+    Z = Z_matrix[, iter],
+    pval = 2 * pnorm(-abs(Z_matrix[, iter])),
+    N_case = N_case_target,
+    N_control = N_control_target
+  )
+  
+  output_file <- sprintf("results/downsampling/LOAD_downsampled_iter%02d.txt", iter)
+  fwrite(gwas_out, output_file, sep = "\t")
+}
+
+rm(Z_matrix)
+gc()
+
+# ==============================================================================
+# Section 7: Generate Visualizations
+# ==============================================================================
+
+p1 <- ggplot(downsampling_info, aes(x = n_sig_5e8)) +
+  geom_histogram(binwidth = 1, fill = "#4DAF4A", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean(downsampling_info$n_sig_5e8), 
+             linetype = "dashed", color = "red", size = 1) +
+  geom_vline(xintercept = sum(eoad_gwas$pval < 5e-8, na.rm = TRUE),
+             linetype = "solid", color = "blue", size = 1) +
+  labs(title = "Genome-Wide Significant SNPs (50 Iterations)",
+       subtitle = sprintf("LOAD downsampled: %.1f ± %.1f | EOAD: %d",
+                          mean(downsampling_info$n_sig_5e8),
+                          sd(downsampling_info$n_sig_5e8),
+                          sum(eoad_gwas$pval < 5e-8, na.rm = TRUE)),
+       x = "Number of Significant SNPs (P < 5e-8)",
+       y = "Frequency") +
+  theme_minimal(base_size = 12)
+
+ggsave("results/downsampling/Figure_SigSNPs_Distribution.pdf", p1, width = 10, height = 6)
+
+set.seed(123)
+sample_idx <- sample(1:nrow(snp_summary), min(10000, nrow(snp_summary)))
+plot_data <- snp_summary[sample_idx, .(Z_original, Z_mean)]
+
+p2 <- ggplot(plot_data, aes(x = abs(Z_original), y = abs(Z_mean))) +
+  geom_point(alpha = 0.3, size = 0.5, color = "#377EB8") +
+  geom_abline(slope = mean(downsampling_info$scale_factor), intercept = 0, 
+              color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Z-statistic Comparison: Original vs Downsampled",
+       subtitle = sprintf("Scale factor: %.4f", mean(downsampling_info$scale_factor)),
+       x = "|Z| Original LOAD",
+       y = "|Z| Downsampled LOAD (Mean of 50)") +
+  theme_minimal(base_size = 12) +
+  coord_fixed()
+
+ggsave("results/downsampling/Figure_Z_Comparison.pdf", p2, width = 8, height = 8)
+
+# ==============================================================================
+# Section 8: Summary Statistics
+# ==============================================================================
+
+cat("\n================================================================================\n")
+cat("Downsampling Summary\n")
+cat("================================================================================\n\n")
+
+load_sig_original <- sum(load_gwas$pval < 5e-8, na.rm = TRUE)
+load_sig_mean <- mean(downsampling_info$n_sig_5e8)
+load_sig_sd <- sd(downsampling_info$n_sig_5e8)
+load_sig_ci <- quantile(downsampling_info$n_sig_5e8, c(0.025, 0.975))
+eoad_sig <- sum(eoad_gwas$pval < 5e-8, na.rm = TRUE)
+
+cat(sprintf("Original LOAD GWAS:\n"))
+cat(sprintf("  Effective cases: %d\n", N_case_LOAD_effective))
+cat(sprintf("  Controls: %d\n", N_control_LOAD))
+cat(sprintf("  Significant SNPs: %d\n\n", load_sig_original))
+
+cat(sprintf("Downsampled LOAD GWAS (50 iterations):\n"))
+cat(sprintf("  Target cases: %d\n", N_case_target))
+cat(sprintf("  Target controls: %d\n", N_control_target))
+cat(sprintf("  Scale factor: %.4f\n", mean(downsampling_info$scale_factor)))
+cat(sprintf("  Mean significant SNPs: %.1f ± %.1f (SD)\n", load_sig_mean, load_sig_sd))
+cat(sprintf("  95%% CI: [%.1f, %.1f]\n\n", load_sig_ci[1], load_sig_ci[2]))
+
+cat(sprintf("EOAD GWAS:\n"))
+cat(sprintf("  Cases: %d\n", N_case_EOAD))
+cat(sprintf("  Controls: %d\n", N_control_EOAD))
+cat(sprintf("  Significant SNPs: %d\n\n", eoad_sig))
+
+cat("Output files:\n")
+cat("  - results/downsampling/SNP_summary_50iterations.txt\n")
+cat("  - results/downsampling/iteration_summary.txt\n")
+cat("  - results/downsampling/LOAD_downsampled_iter*.txt (3 files)\n")
+cat("  - results/downsampling/Figure_*.pdf (2 files)\n\n")
+
+cat("================================================================================\n")
+cat("Analysis Complete\n")
+cat("================================================================================\n\n")
+
+sessionInfo()
