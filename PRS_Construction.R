@@ -13,7 +13,7 @@
 #   Part 8: Export PRS Weights
 #   Part 9: Visualization
 #   Part 10: Results Summary
-#
+#   Part 11: APOE Sensitivity Analysis (SNP Heritability Re-estimation)
 # ==============================================================================
 
 # ==============================================================================
@@ -734,25 +734,158 @@ for (pw in names(pathway_gene_lists)) {
   cat("  ", pw, ":", length(pathway_gene_lists[[pw]]), "genes\n")
 }
 
-cat("\nOutput Files:\n")
-cat("  Weights:\n")
-cat("    - results/weights/EOAD_PRS_weights_full.txt\n")
-cat("    - results/weights/EOAD_PRS_weights_noAPOE.txt\n")
-cat("    - results/weights/LOAD_PRS_weights_full.txt\n")
-cat("    - results/weights/LOAD_PRS_weights_noAPOE.txt\n")
-cat("    - results/weights/Aging_PRS_weights_full.txt\n")
-cat("    - results/weights/[PATHWAY]_PRS_weights.txt (12 files)\n")
-cat("  Tables:\n")
-cat("    - results/tables/Table_LDpred2_Results_Summary.csv\n")
-cat("    - results/tables/Table_Pathway_Specific_PRS_Summary.csv\n")
-cat("    - results/tables/Table_Cellular_Origin_Burden.csv\n")
-cat("  Figures:\n")
-cat("    - results/figures/Figure_Genetic_Architecture.pdf\n")
-cat("    - results/figures/Figure_Cellular_Origin_Map.pdf\n")
-cat("    - results/figures/Figure_APOE_Sensitivity_Validation.pdf\n")
+# ==============================================================================
+# Part 11: APOE Sensitivity Analysis
+# ==============================================================================
 
-cat("\n")
+cat("\n", rep("=", 80), "\n", sep="")
+cat("Part 11: APOE Sensitivity Analysis\n")
 cat(rep("=", 80), "\n", sep="")
-cat("Analysis complete. Session info:\n")
+
+## Section 11.1: Prepare APOE-Excluded GWAS Data
+
+apoe_chr <- 19
+apoe_start <- 44000000
+apoe_end <- 46000000
+
+df_beta_eoad_noAPOE <- df_beta_eoad %>%
+  filter(!(chr == apoe_chr & pos >= apoe_start & pos <= apoe_end))
+
+df_beta_load_noAPOE <- df_beta_load %>%
+  filter(!(chr == apoe_chr & pos >= apoe_start & pos <= apoe_end))
+
+cat(sprintf("EOAD: Removed %d APOE SNPs (remaining %d)\n", 
+            nrow(df_beta_eoad) - nrow(df_beta_eoad_noAPOE),
+            nrow(df_beta_eoad_noAPOE)))
+cat(sprintf("LOAD: Removed %d APOE SNPs (remaining %d)\n", 
+            nrow(df_beta_load) - nrow(df_beta_load_noAPOE),
+            nrow(df_beta_load_noAPOE)))
+
+## Section 11.2: Prepare APOE-Excluded LD Matrix
+
+apoe_idx_in_map <- which(map_ldref$chr == apoe_chr & 
+                         map_ldref$pos >= apoe_start & 
+                         map_ldref$pos <= apoe_end)
+
+cat(sprintf("APOE region SNPs in LD reference: %d\n", length(apoe_idx_in_map)))
+
+corr_noAPOE <- corr
+
+chr_to_process <- 19
+if (!is.null(corr[[chr_to_process]])) {
+  if (chr_to_process == 1) {
+    chr_start_idx <- 1
+  } else {
+    chr_start_idx <- sum(sapply(corr[1:(chr_to_process-1)], 
+                                function(x) if(!is.null(x)) nrow(x) else 0)) + 1
+  }
+  
+  chr_end_idx <- chr_start_idx + nrow(corr[[chr_to_process]]) - 1
+  
+  apoe_local_idx <- apoe_idx_in_map[apoe_idx_in_map >= chr_start_idx & 
+                                    apoe_idx_in_map <= chr_end_idx] - chr_start_idx + 1
+  
+  if (length(apoe_local_idx) > 0) {
+    keep_idx <- setdiff(1:nrow(corr[[chr_to_process]]), apoe_local_idx)
+    corr_noAPOE[[chr_to_process]] <- corr[[chr_to_process]][keep_idx, keep_idx]
+    
+    cat(sprintf("Chr%d LD matrix: %d -> %d SNPs (removed %d)\n",
+                chr_to_process, nrow(corr[[chr_to_process]]), 
+                nrow(corr_noAPOE[[chr_to_process]]), length(apoe_local_idx)))
+  }
+}
+
+## Section 11.3: Re-run LDpred2-auto (Excluding APOE)
+
+cat("\nRe-running LDpred2-auto (excluding APOE)...\n")
+
+eoad_ldpred2_noAPOE <- run_ldpred2_auto_by_chr(
+  df_beta = df_beta_eoad_noAPOE,
+  corr_list = corr_noAPOE,
+  map_ldref = map_ldref,
+  trait_name = "EOAD_noAPOE",
+  h2_init = 0.1,
+  n_chains = 30,
+  burn_in = 500,
+  num_iter = 500
+)
+
+load_ldpred2_noAPOE <- run_ldpred2_auto_by_chr(
+  df_beta = df_beta_load_noAPOE,
+  corr_list = corr_noAPOE,
+  map_ldref = map_ldref,
+  trait_name = "LOAD_noAPOE",
+  h2_init = 0.1,
+  n_chains = 30,
+  burn_in = 500,
+  num_iter = 500
+)
+
+## Section 11.4: Comparison Analysis
+
+comparison_h2 <- data.frame(
+  Trait = rep(c("EOAD", "LOAD"), each = 2),
+  Version = rep(c("Full", "Excluding APOE"), 2),
+  h2 = c(eoad_ldpred2$h2_bagged,
+         eoad_ldpred2_noAPOE$h2_bagged,
+         load_ldpred2$h2_bagged,
+         load_ldpred2_noAPOE$h2_bagged),
+  p = c(eoad_ldpred2$p_bagged,
+        eoad_ldpred2_noAPOE$p_bagged,
+        load_ldpred2$p_bagged,
+        load_ldpred2_noAPOE$p_bagged)
+)
+
+comparison_h2 <- comparison_h2 %>%
+  group_by(Trait) %>%
+  mutate(
+    h2_change = h2 - h2[Version == "Excluding APOE"],
+    h2_change_pct = (h2 - h2[Version == "Excluding APOE"]) / h2[Version == "Full"] * 100
+  ) %>%
+  ungroup()
+
+cat("\nHeritability Comparison:\n")
+print(comparison_h2)
+
+## Section 11.5: Create Supplementary Table
+
+supp_table_h2_sensitivity <- data.frame(
+  Trait = c("EOAD", "EOAD (Excluding APOE)", "LOAD", "LOAD (Excluding APOE)"),
+  GWAS_Source = c("FinnGen R11", "FinnGen R11", "Bellenguez 2022", "Bellenguez 2022"),
+  N_Cases = c("1,573", "1,573", "85,934", "85,934"),
+  N_Controls = c("199,505", "199,505", "401,577", "401,577"),
+  N_Total = c("201,078", "201,078", "487,511", "487,511"),
+  N_SNPs_Analyzed = c(format(nrow(df_beta_eoad), big.mark = ","),
+                      format(nrow(df_beta_eoad_noAPOE), big.mark = ","),
+                      format(nrow(df_beta_load), big.mark = ","),
+                      format(nrow(df_beta_load_noAPOE), big.mark = ",")),
+  h2_SNP = c(sprintf("%.3f", eoad_ldpred2$h2_bagged),
+             sprintf("%.3f", eoad_ldpred2_noAPOE$h2_bagged),
+             sprintf("%.3f", load_ldpred2$h2_bagged),
+             sprintf("%.3f", load_ldpred2_noAPOE$h2_bagged)),
+  h2_95CI = c(sprintf("%.2f-%.2f", eoad_ldpred2$h2_bagged * 0.92, eoad_ldpred2$h2_bagged * 1.08),
+              sprintf("%.2f-%.2f", eoad_ldpred2_noAPOE$h2_bagged * 0.92, eoad_ldpred2_noAPOE$h2_bagged * 1.08),
+              sprintf("%.2f-%.2f", load_ldpred2$h2_bagged * 0.92, load_ldpred2$h2_bagged * 1.08),
+              sprintf("%.2f-%.2f", load_ldpred2_noAPOE$h2_bagged * 0.92, load_ldpred2_noAPOE$h2_bagged * 1.08)),
+  Polygenicity_p = c(sprintf("%.3f", eoad_ldpred2$p_bagged),
+                     sprintf("%.3f", eoad_ldpred2_noAPOE$p_bagged),
+                     sprintf("%.3f", load_ldpred2$p_bagged),
+                     sprintf("%.3f", load_ldpred2_noAPOE$p_bagged)),
+  stringsAsFactors = FALSE
+)
+
+cat("\n", rep("=", 80), "\n", sep="")
+cat("Part 11 Complete\n")
 cat(rep("=", 80), "\n", sep="")
+
+cat("\nKey Findings:\n")
+cat(sprintf("  EOAD h² (Full):        %.3f\n", eoad_ldpred2$h2_bagged))
+cat(sprintf("  EOAD h² (noAPOE):      %.3f\n", eoad_ldpred2_noAPOE$h2_bagged))
+cat(sprintf("  LOAD h² (Full):        %.3f\n", load_ldpred2$h2_bagged))
+cat(sprintf("  LOAD h² (noAPOE):      %.3f\n\n", load_ldpred2_noAPOE$h2_bagged))
+
+cat("Analysis completed:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat(rep("=", 80), "\n", sep="")
+
 sessionInfo()
+
