@@ -1,905 +1,1683 @@
 # ==============================================================================
-# A4/HABS/AIBL Independent Cohort Validation Analysis
+# Cross-Cohort Mechanistic Validation: A4, HABS, and AIBL
 # ==============================================================================
 #
-# Analysis Contents:
-#   Part 1: Environment Setup
-#   Part 2: A4 Cohort - Data Integration and APOE Validation
-#   Part 3: HABS Cohort - pTau217 and WMH Mechanism Validation
-#   Part 4: AIBL Cohort - Survival Analysis
-#   Part 5: Multi-Group SEM Analysis (lavaan, MLR, FIML)
-#   Part 6: Clinical Utility Assessment (Firth, AUC, AUPRC, NRI, IDI, DCA)
-#   Part 7: AIBL Cox Regression and AFT Models
-#   Part 8: Visualization
-#   Part 9: Results Summary
-# ==============================================================================
-# ==============================================================================
-# Part 1: Environment Setup
-# ==============================================================================
-
-packages_cran <- c("data.table", "dplyr", "tidyr", "ggplot2", "cowplot",
-                   "stringr", "survival", "survminer", "pROC", "lavaan",
-                   "lme4", "lmerTest", "semTools", "logistf", "PRROC", "readxl")
-
-for (pkg in packages_cran) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg, quiet = TRUE)
-  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-}
-
-dir.create("results/", showWarnings = FALSE)
-dir.create("results/figures/", showWarnings = FALSE)
-dir.create("results/tables/", showWarnings = FALSE)
-
-## Utility Functions
-find_column <- function(df, patterns, ignore_case = TRUE) {
-  for (pattern in patterns) {
-    matches <- grep(pattern, colnames(df), value = TRUE, ignore.case = ignore_case)
-    if (length(matches) > 0) return(matches[1])
-  }
-  return(NULL)
-}
-
-safe_extract <- function(params_df, label_name, col_name) {
-  idx <- which(params_df$label == label_name)
-  if (length(idx) > 0) return(params_df[[col_name]][idx[1]])
-  return(NA_real_)
-}
-
-theme_nc <- theme_minimal() +
-  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 10),
-        legend.position = "bottom",
-        panel.grid.minor = element_blank())
-
-baseline_codes <- c("bl", "BL", "sc", "SC", "screening", "baseline", "0", "1")
-
-# ==============================================================================
-# Part 2: A4 Cohort - Data Integration and APOE Validation
+# Purpose: Validate WMH-mediated neuroinflammatory mechanisms across three
+#          independent cohorts (A4, HABS, AIBL) for Alzheimer's disease
+#
+# Analyses:
+#   1.  Data loading for A4, HABS, and AIBL cohorts
+#   2.  A4: WMH-cognition association (WMH -> PACC, HC3 robust SE, BP test, Q-Q)
+#   3.  HABS: WMH-pTau217 association (HC3 robust SE, BP test, Q-Q)
+#   4.  HABS: Mediation analysis (WMH -> pTau217 -> MMSE, 5000 bootstrap, z-scored)
+#   5.  HABS: SEM confirmation (5000 bootstrap, z-scored variables)
+#   6.  HABS: Age-stratified mediation AND SEM (<75 vs >=75)
+#   7.  HABS: Age interaction tests (Age x WMH, Age x pTau217)
+#   8.  HABS: Clinical utility (Firth, train/test, AUC, PR-AUC, NRI/IDI bootstrap, DCA 0.01-0.80)
+#   9.  AIBL: Survival analysis (Cox PH, KM curves, AFT models, time in months)
+#   10. Missing data and selection bias assessment (numeric + categorical SMD)
+#   11. Cross-cohort forest plot visualization
+#   12. Mediation path diagram and comprehensive visualizations
+#   13. Main execution script
+#
+# Data requirements:
+#   - A4: SUBJINFO, PTDEMOG, SPPACC, PETSUVR, VMRI (5 separate files)
+#     Column mapping: APOEGN -> APOE4_Carrier, PTGENDER (1=M,2=F),
+#     PTEDUCAT, PACCRN, centiloid, LeftWMHypo + RightWMHypo -> Total_WMH
+#   - HABS: Genomics xlsx, Biomarkers csv, WMH xlsx, Clinical csv (4 files)
+#     Column mapping: APOE4_Positivity, ID_Gender, ID_Education,
+#     r7_QTX_Plasma_pTau217_V2/PLUS/standard (coalesce),
+#     02_WMH_Fail_QC (pass), 02_WMH_Volume_Raw, 02_WMH_Volume_Log,
+#     MMSE_Total, CDR_Global
+#   - AIBL: ptdemog, apoeres, pdxconv (3 csv files)
+#     Column mapping: PTGENDER (1=M,2=F), PTDOB (birth year),
+#     APGEN1/APGEN2 -> APOE4, VISCODE -> months, DXCURREN==3 -> AD
+#
+# Statistical notes:
+#   - All continuous variables z-scored for mediation/SEM (per manuscript)
+#   - WMH: log(raw+1) then z-score; effect = per 1 SD of log(WMH)
+#   - pTau217: log(raw) then z-score for mediation/SEM
+#   - Bootstrap: 5000 iterations for mediation and SEM
+#   - AIBL time unit: months (derived from VISCODE m06, m18, etc.)
+#   - Clinical utility: 70/30 train/test split, seed=2026
+#
 # ==============================================================================
 
-## Section 2.1: Load A4 Subject Information (APOE from A4_SUBJINFO)
-a4_subjinfo <- fread("A4_SUBJINFO_PRV2_08Oct2025.csv")
-a4_subjinfo <- a4_subjinfo[!duplicated(BID)]
-a4_subjinfo$APOE4_Carrier <- as.integer(grepl("4", a4_subjinfo$APOEGN))
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(readxl)
+  library(stringr)
+  library(ggplot2)
+  library(sandwich)
+  library(lmtest)
+  library(mediation)
+  library(lavaan)
+  library(survival)
+  library(survminer)
+  library(cowplot)
+  library(logistf)
+  library(pROC)
+  library(PRROC)  # for PR-AUC
+})
 
-count_apoe4 <- function(geno) {
-  if (is.na(geno) || geno == "") return(NA)
-  alleles <- unlist(strsplit(as.character(geno), "/"))
-  sum(alleles == "4", na.rm = TRUE)
-}
-a4_subjinfo$APOE4_Count <- sapply(a4_subjinfo$APOEGN, count_apoe4)
 
-## Section 2.2: Load A4 Demographics
-a4_demog <- fread("A4_PTDEMOG_PRV2_08Oct2025.csv")
-a4_demog_bl <- a4_demog[VISCODE %in% baseline_codes]
-if (nrow(a4_demog_bl) == 0) a4_demog_bl <- a4_demog[, .SD[1], by = BID]
-a4_demog_bl <- a4_demog_bl[!duplicated(BID)]
+# ==============================================================================
+# 1. DATA LOADING
+# ==============================================================================
 
-## Section 2.3: Load A4 PACC Data
-a4_pacc_raw <- fread("A4_SPPACC_PRV2_08Oct2025.csv")
-a4_pacc_total <- a4_pacc_raw[PACCQSNUM == "PACCTS"]
-a4_pacc_bl <- a4_pacc_total[VISCODE %in% baseline_codes]
-if (nrow(a4_pacc_bl) == 0) a4_pacc_bl <- a4_pacc_total[, .SD[1], by = BID]
-a4_pacc_bl <- a4_pacc_bl[!duplicated(BID)]
-a4_pacc_data <- data.frame(BID = a4_pacc_bl$BID, PACC = as.numeric(a4_pacc_bl$PACCRN))
+# --- 1.1 A4 Cohort ---
+# Reads 5 separate files: SUBJINFO, PTDEMOG, SPPACC, PETSUVR, VMRI
+# Uses VISCODE baseline filtering and specific column names directly
+load_a4_data <- function(subjinfo_file, ptdemog_file, sppacc_file,
+                         petsuvr_file, vmri_file) {
 
-## Section 2.4: Load A4 Amyloid PET (Centiloid from Composite_Summary)
-a4_pet <- fread("A4_PETSUVR_PRV2_08Oct2025.csv")
-a4_pet_composite <- a4_pet[brain_region == "Composite_Summary"]
-a4_pet_bl <- a4_pet_composite[VISCODE %in% baseline_codes]
-if (nrow(a4_pet_bl) == 0) a4_pet_bl <- a4_pet_composite[, .SD[1], by = BID]
-a4_pet_bl <- a4_pet_bl[!duplicated(BID)]
-a4_pet_data <- data.frame(BID = a4_pet_bl$BID, Centiloid = as.numeric(a4_pet_bl$centiloid))
+  baseline_codes <- c("bl", "BL", "sc", "SC", "screening", "baseline", "0", "1")
 
-## Section 2.5: Load A4 MRI Data (WMH as oligodendrocyte proxy)
-a4_mri <- fread("A4_VMRI_PRV2_08Jan2026.csv")
-a4_mri_bl <- a4_mri[VISCODE %in% c(baseline_codes, 0, 1)]
-if (nrow(a4_mri_bl) == 0) a4_mri_bl <- a4_mri[, .SD[1], by = BID]
-a4_mri_bl <- a4_mri_bl[!duplicated(BID)]
+  # 1) APOE from SUBJINFO: APOEGN column, grepl("4") for carrier status
+  subjinfo <- fread(subjinfo_file)
+  subjinfo$APOE4_Carrier <- as.integer(grepl("4", subjinfo$APOEGN))
+  subjinfo <- subjinfo[!duplicated(BID)]
 
-a4_mri_data <- data.frame(BID = a4_mri_bl$BID)
-if (all(c("LeftHippocampus", "RightHippocampus") %in% colnames(a4_mri_bl))) {
-  a4_mri_data$Hippocampus <- a4_mri_bl$LeftHippocampus + a4_mri_bl$RightHippocampus
-}
-if (all(c("LeftWMHypo", "RightWMHypo") %in% colnames(a4_mri_bl))) {
-  a4_mri_data$Total_WMH <- a4_mri_bl$LeftWMHypo + a4_mri_bl$RightWMHypo
-  a4_mri_data$Log_WMH <- log(a4_mri_data$Total_WMH + 1)
-}
-if ("IntraCranialVolume" %in% colnames(a4_mri_bl)) {
-  a4_mri_data$ICV <- a4_mri_bl$IntraCranialVolume
-}
+  # 2) Demographics from PTDEMOG (baseline only)
+  demog <- fread(ptdemog_file)
+  demog_bl <- demog[VISCODE %in% baseline_codes]
+  if (nrow(demog_bl) == 0) demog_bl <- demog[, .SD[1], by = BID]
+  demog_bl <- demog_bl[!duplicated(BID)]
 
-## Section 2.6: Integrate A4 Data
-a4_merged <- data.frame(
-  BID = a4_subjinfo$BID,
-  Age = a4_subjinfo$AGEYR,
-  APOE_Genotype = a4_subjinfo$APOEGN,
-  APOE4_Carrier = a4_subjinfo$APOE4_Carrier,
-  APOE4_Count = a4_subjinfo$APOE4_Count
-)
+  # 3) PACC from SPPACC (PACCTS at baseline)
+  pacc <- fread(sppacc_file)
+  pacc_total <- pacc[PACCQSNUM == "PACCTS"]
+  pacc_bl <- pacc_total[VISCODE %in% baseline_codes]
+  if (nrow(pacc_bl) == 0) pacc_bl <- pacc_total[, .SD[1], by = BID]
+  pacc_bl <- pacc_bl[!duplicated(BID)]
 
-demog_subset <- data.frame(
-  BID = a4_demog_bl$BID,
-  Gender = a4_demog_bl$PTGENDER,
-  Education = a4_demog_bl$PTEDUCAT
-)
+  # 4) Centiloid from PETSUVR (Composite_Summary at baseline)
+  pet <- fread(petsuvr_file)
+  pet_composite <- pet[brain_region == "Composite_Summary"]
+  pet_bl <- pet_composite[VISCODE %in% baseline_codes]
+  if (nrow(pet_bl) == 0) pet_bl <- pet_composite[, .SD[1], by = BID]
+  pet_bl <- pet_bl[!duplicated(BID)]
 
-a4_merged <- merge(a4_merged, demog_subset, by = "BID", all.x = TRUE)
-a4_merged <- merge(a4_merged, a4_pacc_data, by = "BID", all.x = TRUE)
-a4_merged <- merge(a4_merged, a4_pet_data, by = "BID", all.x = TRUE)
-a4_merged <- merge(a4_merged, a4_mri_data, by = "BID", all.x = TRUE)
+  # 5) WMH from VMRI (baseline): LeftWMHypo + RightWMHypo
+  mri <- fread(vmri_file)
+  mri_bl <- mri[VISCODE %in% c(baseline_codes, 0, 1)]
+  if (nrow(mri_bl) == 0) mri_bl <- mri[, .SD[1], by = BID]
+  mri_bl <- mri_bl[!duplicated(BID)]
 
-# Age stratification: <70 vs >=70 per methods
-a4_merged$Age_Group <- factor(
-  ifelse(a4_merged$Age < 70, "Younger (<70)", "Older (>=70)"),
-  levels = c("Younger (<70)", "Older (>=70)")
-)
-a4_merged$APOE4_Status <- factor(
-  ifelse(a4_merged$APOE4_Carrier == 1, "APOE4+", "APOE4-"),
-  levels = c("APOE4-", "APOE4+")
-)
-
-if ("Log_WMH" %in% colnames(a4_merged)) {
-  wmh_median <- median(a4_merged$Log_WMH, na.rm = TRUE)
-  a4_merged$WMH_Group <- factor(
-    ifelse(a4_merged$Log_WMH > wmh_median, "High WMH", "Low WMH"),
-    levels = c("Low WMH", "High WMH")
+  # --- Merge all on BID ---
+  merged <- data.frame(
+    BID = subjinfo$BID,
+    Age = subjinfo$AGEYR,
+    APOE4_Carrier = subjinfo$APOE4_Carrier
   )
-}
 
-fwrite(a4_merged, "results/A4_Integrated_Data.csv")
-
-# ==============================================================================
-# Part 3: HABS Cohort - pTau217 and WMH Mechanism Validation
-# ==============================================================================
-
-## Section 3.1: Load HABS Baseline Integrated Data
-habs_data <- fread("HABS_Baseline_Integrated_FINAL.csv")
-
-## Section 3.2: Load HABS WMH Data (HD Release 7, QC-passed baseline)
-habs_wmh_raw <- read_xlsx("HABS_HD_RP_7_WMH_Combination_Report_Analysis.xlsx", sheet = "x1")
-habs_wmh_qc <- habs_wmh_raw %>% filter(tolower(`02_WMH_Fail_QC`) == "pass")
-habs_wmh_bl <- habs_wmh_qc %>% distinct(Med_ID, .keep_all = TRUE)
-
-habs_wmh <- habs_wmh_bl %>%
-  dplyr::select(Med_ID, Total_WMH = `02_WMH_Volume_Raw`, Log_WMH = `02_WMH_Volume_Log`) %>%
-  mutate(
-    Med_ID = as.character(Med_ID),
-    Total_WMH = as.numeric(as.character(Total_WMH)),
-    Log_WMH = as.numeric(as.character(Log_WMH))
-  ) %>%
-  filter(!is.na(Log_WMH) & is.finite(Log_WMH))
-
-## Section 3.3: Standardize Variable Names
-apoe_col <- find_column(habs_data, c("APOE4_Positive", "APOE4_Carrier", "APOE4_Positivity"))
-if (!is.null(apoe_col)) habs_data$APOE4_Carrier <- as.integer(habs_data[[apoe_col]])
-
-mmse_col <- find_column(habs_data, c("MMSE_Baseline", "MMSE", "MMSE_Total"))
-if (!is.null(mmse_col)) habs_data$MMSE <- as.numeric(habs_data[[mmse_col]])
-
-cdr_col <- find_column(habs_data, c("CDR_Global", "CDR", "CDR_Baseline"))
-if (!is.null(cdr_col)) habs_data$CDR <- as.numeric(habs_data[[cdr_col]])
-
-gender_col <- find_column(habs_data, c("Gender", "ID_Gender", "Sex"))
-if (!is.null(gender_col)) habs_data$Gender <- habs_data[[gender_col]]
-
-## Section 3.4: Merge WMH Data
-merge_key <- find_column(habs_data, c("Med_ID", "MedID", "Subject_ID"))
-if (!is.null(merge_key)) {
-  habs_data[[merge_key]] <- as.character(habs_data[[merge_key]])
-  if (merge_key != "Med_ID") {
-    habs_wmh <- habs_wmh %>% dplyr::rename(!!merge_key := Med_ID)
-  }
-  if ("Log_WMH" %in% colnames(habs_data)) {
-    habs_data <- habs_data %>% dplyr::select(-Log_WMH)
-  }
-  habs_data <- habs_data %>% dplyr::left_join(habs_wmh, by = merge_key)
-}
-
-## Section 3.5: Define Cognitive Impairment (CDR >= 0.5 OR MMSE < 24)
-habs_data$Cognitive_Impairment <- as.integer(
-  (habs_data$CDR >= 0.5 & !is.na(habs_data$CDR)) |
-    (habs_data$MMSE < 24 & !is.na(habs_data$MMSE))
-)
-
-## Section 3.6: Create Stratification Variables
-habs_data$Age_Group <- factor(
-  ifelse(habs_data$Age < 70, "Younger (<70)", "Older (>=70)"),
-  levels = c("Younger (<70)", "Older (>=70)")
-)
-habs_data$APOE4_Status <- factor(
-  ifelse(habs_data$APOE4_Carrier == 1, "APOE4+", "APOE4-"),
-  levels = c("APOE4-", "APOE4+")
-)
-
-if ("Log_WMH" %in% colnames(habs_data)) {
-  wmh_median <- median(habs_data$Log_WMH, na.rm = TRUE)
-  habs_data$WMH_Group <- factor(
-    ifelse(habs_data$Log_WMH > wmh_median, "High WMH", "Low WMH"),
-    levels = c("Low WMH", "High WMH")
+  # Demographics: PTGENDER (1=Male, 2=Female), PTEDUCAT
+  demog_sub <- data.frame(
+    BID = demog_bl$BID,
+    Gender_Raw = demog_bl$PTGENDER,
+    Education = demog_bl$PTEDUCAT
   )
-}
+  merged <- merge(merged, demog_sub, by = "BID", all.x = TRUE)
 
-habs_data$Gender_num <- as.numeric(as.factor(habs_data$Gender))
+  # Explicit gender recoding (A4: 1=Male, 2=Female)
+  merged$Gender <- factor(
+    ifelse(merged$Gender_Raw == 1, "Male",
+           ifelse(merged$Gender_Raw == 2, "Female", NA)),
+    levels = c("Male", "Female")
+  )
 
-fwrite(habs_data, "results/HABS_Integrated_Data.csv")
+  # PACC: PACCRN column
+  pacc_sub <- data.frame(BID = pacc_bl$BID, PACC = as.numeric(pacc_bl$PACCRN))
+  merged <- merge(merged, pacc_sub, by = "BID", all.x = TRUE)
 
-# ==============================================================================
-# Part 4: AIBL Cohort - Data Integration
-# ==============================================================================
+  # Centiloid
+  pet_sub <- data.frame(BID = pet_bl$BID, Centiloid = as.numeric(pet_bl$centiloid))
+  merged <- merge(merged, pet_sub, by = "BID", all.x = TRUE)
 
-## Section 4.1: Load AIBL Demographics
-baseline_codes_aibl <- c("bl", "BL", "M00", "m00", "0", "sc", "screening")
-
-aibl_demog <- fread("aibl_ptdemog_01-Jun-2018.csv")
-aibl_demog_bl <- aibl_demog[VISCODE %in% baseline_codes_aibl]
-if (nrow(aibl_demog_bl) == 0) aibl_demog_bl <- aibl_demog[, .SD[1], by = RID]
-aibl_demog_bl <- aibl_demog_bl[!duplicated(RID)]
-
-## Section 4.2: Load AIBL APOE Data (from APGEN1 and APGEN2)
-aibl_apoe <- fread("aibl_apoeres_01-Jun-2018.csv")
-aibl_apoe$APOE4_Carrier <- as.integer(aibl_apoe$APGEN1 == 4 | aibl_apoe$APGEN2 == 4)
-aibl_apoe <- aibl_apoe[!duplicated(RID)]
-
-## Section 4.3: Load AIBL Diagnosis Conversion Data (DXCURREN == 3 = AD)
-aibl_dx <- fread("aibl_pdxconv_01-Jun-2018.csv")
-
-aibl_dx$Visit_Month <- NA_real_
-aibl_dx$Visit_Month[tolower(aibl_dx$VISCODE) == "bl"] <- 0
-month_pattern <- grepl("^m[0-9]+$", tolower(aibl_dx$VISCODE))
-aibl_dx$Visit_Month[month_pattern] <- as.numeric(gsub("^m", "", tolower(aibl_dx$VISCODE[month_pattern])))
-
-aibl_followup <- aibl_dx[!is.na(Visit_Month), .(
-  Max_Followup = max(Visit_Month, na.rm = TRUE),
-  Conversion_Month = {
-    ad_visits <- Visit_Month[DXCURREN == 3 & !is.na(DXCURREN)]
-    if (length(ad_visits) > 0) min(ad_visits) else NA_real_
-  },
-  Ever_AD = as.integer(any(DXCURREN == 3, na.rm = TRUE))
-), by = RID]
-
-aibl_followup$Max_Followup[!is.finite(aibl_followup$Max_Followup)] <- NA
-
-## Section 4.4: Load AIBL MMSE Data
-aibl_mmse <- fread("aibl_mmse_01-Jun-2018.csv")
-aibl_mmse_bl <- aibl_mmse[VISCODE %in% baseline_codes_aibl]
-if (nrow(aibl_mmse_bl) == 0) aibl_mmse_bl <- aibl_mmse[, .SD[1], by = RID]
-aibl_mmse_bl <- aibl_mmse_bl[!duplicated(RID)]
-
-## Section 4.5: Integrate AIBL Data
-aibl_merged <- data.frame(RID = aibl_demog_bl$RID)
-
-if ("PTGENDER" %in% colnames(aibl_demog_bl)) {
-  aibl_merged$Gender <- aibl_demog_bl$PTGENDER
-}
-
-if ("PTDOB" %in% colnames(aibl_demog_bl)) {
-  raw_dob <- as.character(aibl_demog_bl$PTDOB)
-  birth_years <- as.numeric(str_extract(raw_dob, "\\d{4}"))
-  if ("EXAMDATE" %in% colnames(aibl_demog_bl)) {
-    exam_years <- as.numeric(str_extract(as.character(aibl_demog_bl$EXAMDATE), "\\d{4}"))
-    aibl_merged$Age <- exam_years - birth_years
+  # WMH: LeftWMHypo + RightWMHypo -> Total_WMH -> log(+1) -> z-score
+  if (all(c("LeftWMHypo", "RightWMHypo") %in% colnames(mri_bl))) {
+    mri_sub <- data.frame(
+      BID = mri_bl$BID,
+      Total_WMH = mri_bl$LeftWMHypo + mri_bl$RightWMHypo,
+      Log_WMH_Raw = log(mri_bl$LeftWMHypo + mri_bl$RightWMHypo + 1)
+    )
+    merged <- merge(merged, mri_sub, by = "BID", all.x = TRUE)
   } else {
-    aibl_merged$Age <- 2008 - birth_years
+    warning("A4: LeftWMHypo/RightWMHypo columns not found in VMRI file")
+    merged$Total_WMH <- NA
+    merged$Log_WMH_Raw <- NA
   }
-  aibl_merged$Age[aibl_merged$Age < 40 | aibl_merged$Age > 110] <- NA
+
+  # WMH standardization (per 1 SD of log-transformed WMH)
+  wmh_sd <- sd(merged$Log_WMH_Raw, na.rm = TRUE)
+  merged$Log_WMH_z <- as.numeric(scale(merged$Log_WMH_Raw))
+
+  # Save original SD for effect interpretation
+  cat(sprintf("  A4: N=%d, WMH SD(log)=%.3f\n", nrow(merged), wmh_sd))
+  cat(sprintf("  Gender: %s\n",
+              paste(names(table(merged$Gender)), table(merged$Gender),
+                    sep = "=", collapse = ", ")))
+
+  attr(merged, "wmh_sd") <- wmh_sd
+  return(merged)
 }
 
-aibl_merged <- merge(aibl_merged, aibl_apoe[, c("RID", "APOE4_Carrier")], by = "RID", all.x = TRUE)
-aibl_merged <- merge(aibl_merged, aibl_followup, by = "RID", all.x = TRUE)
 
-# Time to event: conversion month or last follow-up
-aibl_merged$Time <- ifelse(
-  !is.na(aibl_merged$Conversion_Month) & aibl_merged$Conversion_Month > 0,
-  aibl_merged$Conversion_Month,
-  aibl_merged$Max_Followup
-)
-aibl_merged$Event <- aibl_merged$Ever_AD
+# --- 1.2 HABS Cohort ---
+# Reads 4 files: Genomics xlsx, Biomarkers csv, WMH xlsx, Clinical csv
+# Uses multi-source pTau217 coalesce strategy and WMH QC filtering
+load_habs_data <- function(genomics_xlsx, biomarkers_csv, wmh_xlsx,
+                           clinical_csv, wmh_sheet = "x1") {
 
-mmse_subset <- data.frame(RID = aibl_mmse_bl$RID, MMSE = as.numeric(aibl_mmse_bl$MMSCORE))
-aibl_merged <- merge(aibl_merged, mmse_subset, by = "RID", all.x = TRUE)
+  # 1) Demographics + APOE from Genomics xlsx
+  genomics <- read_xlsx(genomics_xlsx)
+  apoe <- genomics %>%
+    filter(APOE4_Positivity >= 0) %>%
+    dplyr::select(Med_ID, Age, Gender_Raw = ID_Gender,
+                  Education = ID_Education,
+                  APOE4_Carrier = APOE4_Positivity) %>%
+    distinct(Med_ID, .keep_all = TRUE)
 
-# Age stratification
-aibl_merged$Age_Group <- factor(
-  ifelse(aibl_merged$Age < 70, "Younger (<70)", "Older (>=70)"),
-  levels = c("Younger (<70)", "Older (>=70)")
-)
-aibl_merged$APOE4_Status <- factor(
-  ifelse(aibl_merged$APOE4_Carrier == 1, "APOE4+", "APOE4-"),
-  levels = c("APOE4-", "APOE4+")
-)
+  # Explicit gender recoding for HABS
+  if (is.character(apoe$Gender_Raw)) {
+    if (all(apoe$Gender_Raw %in% c("Male", "Female", NA))) {
+      apoe$Gender <- factor(apoe$Gender_Raw, levels = c("Male", "Female"))
+    } else if (all(apoe$Gender_Raw %in% c("M", "F", NA))) {
+      apoe$Gender <- factor(
+        ifelse(apoe$Gender_Raw == "M", "Male",
+               ifelse(apoe$Gender_Raw == "F", "Female", NA)),
+        levels = c("Male", "Female"))
+    } else {
+      apoe$Gender <- factor(apoe$Gender_Raw)
+    }
+  } else {
+    apoe$Gender <- factor(
+      ifelse(apoe$Gender_Raw == 1, "Male",
+             ifelse(apoe$Gender_Raw == 0, "Female", NA)),
+      levels = c("Male", "Female"))
+  }
 
-fwrite(aibl_merged, "results/AIBL_Integrated_Data.csv")
+  # 2) pTau217 from Biomarkers csv (multi-source coalesce strategy)
+  biomarkers <- fread(biomarkers_csv)
 
-# ==============================================================================
-# Part 5: Multi-Group SEM Analysis (lavaan, MLR, FIML)
-# ==============================================================================
+  # Priority order for pTau217 columns (V2 > PLUS > standard > generic)
+  priority_cols <- c(
+    "r7_QTX_Plasma_pTau217_V2",
+    "r7_QTX_Plasma_pTau217_PLUS",
+    "r7_QTX_Plasma_pTau217",
+    "pTau217",
+    "Plasma_pTau217"
+  )
+  available_ptau_cols <- intersect(priority_cols, colnames(biomarkers))
 
-## Section 5.1: A4 Cohort SEM - APOE4 -> Centiloid -> PACC
-a4_sem <- subset(a4_merged, !is.na(APOE4_Carrier) & !is.na(Age) & !is.na(Centiloid) & !is.na(PACC))
-a4_sem$APOE4 <- as.numeric(a4_sem$APOE4_Carrier)
-a4_sem$Age_z <- scale(a4_sem$Age)[,1]
-a4_sem$Centiloid_z <- scale(a4_sem$Centiloid)[,1]
-a4_sem$PACC_z <- scale(a4_sem$PACC)[,1]
-a4_sem$Gender_num <- as.numeric(a4_sem$Gender)
+  if (length(available_ptau_cols) == 0) {
+    ptau_cols <- grep("217", grep("pTau|ptau|PTAU", colnames(biomarkers),
+                                   value = TRUE, ignore.case = TRUE),
+                      value = TRUE)
+    available_ptau_cols <- ptau_cols
+  }
 
-# Overall model
-sem_model_a4_overall <- '
-  Centiloid_z ~ a * APOE4 + Age_z + Gender_num
-  PACC_z ~ b * Centiloid_z + c * APOE4 + Age_z + Gender_num
-  indirect := a * b
-  direct := c
-  total := a * b + c
-'
+  if (length(available_ptau_cols) == 0) {
+    stop("No pTau217 columns found in HABS Biomarkers file")
+  }
 
-fit_a4_overall <- tryCatch({
-  sem(sem_model_a4_overall, data = a4_sem, estimator = "MLR", missing = "FIML")
-}, error = function(e) NULL)
+  cat(sprintf("  HABS pTau217 columns found: %s\n",
+              paste(available_ptau_cols, collapse = ", ")))
 
-# Multi-group model with c(a1, a2) syntax per methods
-sem_model_a4_free <- '
-  Centiloid_z ~ c(a1, a2) * APOE4 + Age_z + Gender_num
-  PACC_z ~ c(b1, b2) * Centiloid_z + c(c1, c2) * APOE4 + Age_z + Gender_num
-  indirect1 := a1 * b1
-  indirect2 := a2 * b2
-  diff_a := a1 - a2
-  diff_b := b1 - b2
-  diff_indirect := indirect1 - indirect2
-'
+  ptau_df <- biomarkers[, c("Med_ID", available_ptau_cols), with = FALSE]
 
-fit_a4_free <- tryCatch({
-  sem(sem_model_a4_free, data = a4_sem, group = "Age_Group", 
-      estimator = "MLR", missing = "FIML")
-}, error = function(e) NULL)
+  # Convert to numeric and clean outliers (<=0 or >=1000)
+  for (col in available_ptau_cols) {
+    ptau_df[[col]] <- as.numeric(ptau_df[[col]])
+    ptau_df[[col]][ptau_df[[col]] <= 0 | ptau_df[[col]] >= 1000] <- NA
+  }
 
-# Extract model fit indices (CFI, TLI, RMSEA, SRMR)
-if (!is.null(fit_a4_free)) {
-  fit_a4_indices <- fitMeasures(fit_a4_free, c("cfi", "tli", "rmsea", "srmr"))
-  params_a4 <- parameterEstimates(fit_a4_free, standardized = TRUE)
-  
-  # Bootstrap CI for indirect effects (1000 iterations)
-  fit_a4_boot <- tryCatch({
-    sem(sem_model_a4_free, data = a4_sem, group = "Age_Group",
-        estimator = "MLR", missing = "FIML", se = "bootstrap", bootstrap = 1000)
-  }, error = function(e) NULL)
+  # Coalesce: use first non-NA value in priority order
+  if (length(available_ptau_cols) == 1) {
+    ptau_df$pTau217_Raw <- ptau_df[[available_ptau_cols[1]]]
+  } else {
+    ptau_df$pTau217_Raw <- do.call(coalesce, lapply(available_ptau_cols,
+                                                     function(x) ptau_df[[x]]))
+  }
+
+  ptau_df <- ptau_df[!is.na(pTau217_Raw)][!duplicated(Med_ID)]
+  ptau_df$Log_pTau217 <- log(ptau_df$pTau217_Raw)
+
+  cat(sprintf("  HABS pTau217: %d samples after coalesce (%.1f%%)\n",
+              nrow(ptau_df), 100 * nrow(ptau_df) / nrow(biomarkers)))
+
+  # 3) WMH from xlsx with QC filtering (02_WMH_Fail_QC == "pass")
+  wmh_raw <- read_xlsx(wmh_xlsx, sheet = wmh_sheet)
+  wmh <- wmh_raw %>%
+    filter(tolower(`02_WMH_Fail_QC`) == "pass") %>%
+    distinct(Med_ID, .keep_all = TRUE) %>%
+    dplyr::select(Med_ID,
+                  Total_WMH = `02_WMH_Volume_Raw`,
+                  Log_WMH_Raw = `02_WMH_Volume_Log`) %>%
+    mutate(Med_ID = as.character(Med_ID),
+           Total_WMH = as.numeric(as.character(Total_WMH)),
+           Log_WMH_Raw = as.numeric(as.character(Log_WMH_Raw))) %>%
+    filter(!is.na(Log_WMH_Raw) & is.finite(Log_WMH_Raw))
+
+  wmh_sd <- sd(wmh$Log_WMH_Raw, na.rm = TRUE)
+  wmh$Log_WMH_z <- as.numeric(scale(wmh$Log_WMH_Raw))
+
+  # 4) Clinical data (MMSE_Total, CDR_Global)
+  clinical <- fread(clinical_csv)
+  clinical_bl <- clinical[!duplicated(Med_ID)]
+  clinical_data <- data.frame(
+    Med_ID = clinical_bl$Med_ID,
+    MMSE = as.numeric(clinical_bl$MMSE_Total),
+    CDR = as.numeric(clinical_bl$CDR_Global)
+  )
+  clinical_data$MMSE[clinical_data$MMSE < 0] <- NA
+
+  # --- Merge all on Med_ID ---
+  merged <- as.data.frame(apoe)
+  merged <- merge(merged, as.data.frame(ptau_df), by = "Med_ID", all.x = TRUE)
+  merged <- merge(merged, as.data.frame(wmh), by = "Med_ID", all.x = TRUE)
+  merged <- merge(merged, clinical_data, by = "Med_ID", all.x = TRUE)
+
+  # Construct AD_Conversion per manuscript: CDR >= 0.5 OR MMSE < 24
+  merged$AD_Conversion <- as.integer(
+    (!is.na(merged$CDR) & merged$CDR >= 0.5) |
+    (!is.na(merged$MMSE) & merged$MMSE < 24)
+  )
+  # Set to NA if both CDR and MMSE are missing
+  merged$AD_Conversion[is.na(merged$CDR) & is.na(merged$MMSE)] <- NA
+
+  # Z-scored variables for mediation/SEM (per manuscript: all continuous z-scored)
+  merged$Log_pTau217_z <- as.numeric(scale(merged$Log_pTau217))
+  merged$MMSE_z <- as.numeric(scale(merged$MMSE))
+
+  cat(sprintf("  HABS: N=%d, WMH SD(log)=%.3f\n", nrow(merged), wmh_sd))
+  cat(sprintf("  pTau217 available: %d (%.1f%%)\n",
+              sum(!is.na(merged$Log_pTau217)),
+              100 * mean(!is.na(merged$Log_pTau217))))
+  cat(sprintf("  WMH available: %d (%.1f%%)\n",
+              sum(!is.na(merged$Log_WMH_z)),
+              100 * mean(!is.na(merged$Log_WMH_z))))
+  cat(sprintf("  AD_Conversion events: %d\n",
+              sum(merged$AD_Conversion, na.rm = TRUE)))
+
+  attr(merged, "wmh_sd") <- wmh_sd
+  return(merged)
 }
 
-## Section 5.2: HABS Cohort SEM - APOE4 -> pTau217 -> MMSE
-if ("pTau217" %in% colnames(habs_data) && "MMSE" %in% colnames(habs_data)) {
-  
-  habs_sem <- subset(habs_data, !is.na(APOE4_Carrier) & !is.na(Age) & 
-                       !is.na(pTau217) & !is.na(MMSE))
-  habs_sem$APOE4 <- as.numeric(habs_sem$APOE4_Carrier)
-  habs_sem$Age_z <- scale(habs_sem$Age)[,1]
-  habs_sem$pTau_z <- scale(habs_sem$pTau217)[,1]
-  habs_sem$MMSE_z <- scale(habs_sem$MMSE)[,1]
-  
-  # Overall model
-  sem_model_habs_overall <- '
-    pTau_z ~ a * APOE4 + Age_z + Gender_num
-    MMSE_z ~ b * pTau_z + c * APOE4 + Age_z + Gender_num
+
+# --- 1.3 AIBL Cohort ---
+# Reads 3 files: ptdemog, apoeres, pdxconv
+# Time unit: MONTHS (from VISCODE m06, m18, m36, etc.)
+load_aibl_data <- function(ptdemog_file, apoeres_file, pdxconv_file,
+                           baseline_year = 2008) {
+
+  baseline_codes <- c("bl", "BL", "M00", "m00", "0", "sc", "screening")
+
+  # 1) Demographics from ptdemog (baseline)
+  demog <- fread(ptdemog_file)
+  demog_bl <- demog[VISCODE %in% baseline_codes]
+  if (nrow(demog_bl) == 0) demog_bl <- demog[, .SD[1], by = RID]
+  demog_bl <- demog_bl[!duplicated(RID)]
+
+  # 2) APOE from apoeres (APGEN1/APGEN2 -> APOE4 carrier)
+  apoe <- fread(apoeres_file)
+  apoe$APOE4_Carrier <- as.integer(apoe$APGEN1 == 4 | apoe$APGEN2 == 4)
+  apoe <- apoe[!duplicated(RID)]
+
+  # 3) Conversion tracking from pdxconv (VISCODE -> months)
+  dx <- fread(pdxconv_file)
+  dx$Visit_Month <- NA_real_
+  dx$Visit_Month[tolower(dx$VISCODE) == "bl"] <- 0
+  month_pattern <- grepl("^m[0-9]+$", tolower(dx$VISCODE))
+  dx$Visit_Month[month_pattern] <- as.numeric(
+    gsub("^m", "", tolower(dx$VISCODE[month_pattern])))
+
+  followup <- dx[!is.na(Visit_Month), .(
+    Max_Followup = max(Visit_Month, na.rm = TRUE),
+    Conversion_Month = {
+      ad_visits <- Visit_Month[DXCURREN == 3 & !is.na(DXCURREN)]
+      if (length(ad_visits) > 0) min(ad_visits) else NA_real_
+    },
+    Ever_AD = as.integer(any(DXCURREN == 3, na.rm = TRUE))
+  ), by = RID]
+
+  # Time = conversion month if converted, else max follow-up (in MONTHS)
+  followup$Time <- ifelse(
+    !is.na(followup$Conversion_Month) & followup$Conversion_Month > 0,
+    followup$Conversion_Month,
+    followup$Max_Followup)
+  followup$Event <- followup$Ever_AD
+
+  # --- Merge ---
+  merged <- data.frame(RID = demog_bl$RID)
+
+  # Explicit gender recoding (AIBL: 1=Male, 2=Female)
+  merged$Gender <- factor(
+    ifelse(demog_bl$PTGENDER == 1, "Male",
+           ifelse(demog_bl$PTGENDER == 2, "Female", NA)),
+    levels = c("Male", "Female"))
+
+  # Age calculation from PTDOB (extract 4-digit year, subtract from baseline)
+  birth_years <- as.numeric(str_extract(as.character(demog_bl$PTDOB), "\\d{4}"))
+  merged$Age <- baseline_year - birth_years
+  merged$Age[merged$Age < 40 | merged$Age > 110 | is.na(merged$Age)] <- NA
+
+  # Merge APOE
+  merged <- merge(merged, apoe[, .(RID, APOE4_Carrier)],
+                  by = "RID", all.x = TRUE)
+
+  # Merge follow-up
+  merged <- merge(merged, followup, by = "RID", all.x = TRUE)
+
+  # Remove Time == 0 samples (QC: no follow-up or baseline-only events)
+  n_before <- nrow(merged)
+  merged <- merged[is.na(merged$Time) | merged$Time > 0, ]
+  n_removed <- n_before - nrow(merged)
+  if (n_removed > 0) {
+    cat(sprintf("  AIBL: Removed %d samples with Time==0 (QC)\n", n_removed))
+  }
+
+  cat(sprintf("  AIBL: N=%d, Events=%d (%.1f%%)\n",
+              nrow(merged), sum(merged$Event, na.rm = TRUE),
+              100 * mean(merged$Event, na.rm = TRUE)))
+  cat(sprintf("  Age: %.1f +/- %.1f (range: %.0f-%.0f)\n",
+              mean(merged$Age, na.rm = TRUE), sd(merged$Age, na.rm = TRUE),
+              min(merged$Age, na.rm = TRUE), max(merged$Age, na.rm = TRUE)))
+  cat(sprintf("  Time unit: MONTHS (median=%.1f, max=%.1f)\n",
+              median(merged$Time, na.rm = TRUE),
+              max(merged$Time, na.rm = TRUE)))
+
+  return(merged)
+}
+
+
+# ==============================================================================
+# 2. A4: WMH-COGNITION ASSOCIATION (HC3 ROBUST SE + BP TEST + Q-Q)
+# ==============================================================================
+
+run_a4_wmh_cognition <- function(data, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  df <- data[complete.cases(data[, c("Log_WMH_z", "PACC", "Age", "Gender",
+                                      "APOE4_Carrier", "Education",
+                                      "Centiloid")]), ]
+
+  # Base model (without WMH)
+  fit_base <- lm(PACC ~ Age + Gender + APOE4_Carrier + Education + Centiloid,
+                 data = df)
+
+  # Full model (with standardized WMH)
+  fit_full <- lm(PACC ~ Log_WMH_z + Age + Gender + APOE4_Carrier +
+                   Education + Centiloid, data = df)
+  s_ols <- summary(fit_full)$coefficients["Log_WMH_z", ]
+
+  # HC3 robust standard errors
+  fit_hc3 <- coeftest(fit_full, vcov = vcovHC(fit_full, type = "HC3"))
+  s_hc3 <- fit_hc3["Log_WMH_z", ]
+
+  # R-squared change
+  r2_base <- summary(fit_base)$r.squared
+  r2_full <- summary(fit_full)$r.squared
+
+  # Breusch-Pagan heteroscedasticity test
+  bp_test <- bptest(fit_full)
+
+  # Q-Q diagnostic plot
+  pdf(file.path(output_dir, "A4_qq_plot.pdf"), width = 6, height = 6)
+  qqnorm(residuals(fit_full), main = "A4: Normal Q-Q Plot of Residuals")
+  qqline(residuals(fit_full), col = "red", lwd = 2)
+  dev.off()
+
+  list(
+    ols = data.frame(
+      Beta = s_ols["Estimate"], SE = s_ols["Std. Error"],
+      t = s_ols["t value"], P = s_ols["Pr(>|t|)"],
+      CI_Lower = s_ols["Estimate"] - 1.96 * s_ols["Std. Error"],
+      CI_Upper = s_ols["Estimate"] + 1.96 * s_ols["Std. Error"],
+      N = nrow(df), stringsAsFactors = FALSE),
+    hc3 = data.frame(
+      Beta = s_hc3["Estimate"], SE = s_hc3["Std. Error"],
+      t = s_hc3["t value"], P = s_hc3["Pr(>|t|)"],
+      CI_Lower = s_hc3["Estimate"] - 1.96 * s_hc3["Std. Error"],
+      CI_Upper = s_hc3["Estimate"] + 1.96 * s_hc3["Std. Error"],
+      N = nrow(df), stringsAsFactors = FALSE),
+    model_fit = data.frame(
+      R2_Base = r2_base, R2_Full = r2_full,
+      Delta_R2 = r2_full - r2_base, stringsAsFactors = FALSE),
+    diagnostics = data.frame(
+      BP_Statistic = as.numeric(bp_test$statistic),
+      BP_P = bp_test$p.value,
+      Heteroscedasticity = bp_test$p.value < 0.05,
+      stringsAsFactors = FALSE),
+    wmh_sd = attr(data, "wmh_sd")
+  )
+}
+
+
+# ==============================================================================
+# 3. HABS: WMH-pTau217 ASSOCIATION (HC3 + BP + Q-Q)
+# ==============================================================================
+
+run_habs_wmh_ptau217 <- function(data, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  df <- data[complete.cases(data[, c("Log_WMH_z", "Log_pTau217", "Age",
+                                      "Gender", "APOE4_Carrier",
+                                      "Education")]), ]
+  df <- df[is.finite(df$Log_pTau217), ]
+
+  # Base model
+  fit_base <- lm(Log_pTau217 ~ Age + Gender + APOE4_Carrier + Education,
+                 data = df)
+
+  # Full model
+  fit_full <- lm(Log_pTau217 ~ Log_WMH_z + Age + Gender + APOE4_Carrier +
+                   Education, data = df)
+  s_ols <- summary(fit_full)$coefficients["Log_WMH_z", ]
+
+  # HC3 robust standard errors
+  fit_hc3 <- coeftest(fit_full, vcov = vcovHC(fit_full, type = "HC3"))
+  s_hc3 <- fit_hc3["Log_WMH_z", ]
+
+  # R-squared change
+  r2_base <- summary(fit_base)$r.squared
+  r2_full <- summary(fit_full)$r.squared
+
+  # Breusch-Pagan test
+  bp_test <- bptest(fit_full)
+
+  # Q-Q diagnostic plot
+  pdf(file.path(output_dir, "HABS_qq_plot.pdf"), width = 6, height = 6)
+  qqnorm(residuals(fit_full), main = "HABS: Normal Q-Q Plot of Residuals")
+  qqline(residuals(fit_full), col = "red", lwd = 2)
+  dev.off()
+
+  # APOE4-stratified analysis
+  strat_results <- list()
+  for (apoe in c(0, 1)) {
+    sub <- df[df$APOE4_Carrier == apoe, ]
+    if (nrow(sub) < 20) next
+    fit <- lm(Log_pTau217 ~ Log_WMH_z + Age + Gender + Education, data = sub)
+    s <- summary(fit)$coefficients["Log_WMH_z", ]
+    strat_results[[length(strat_results) + 1]] <- data.frame(
+      APOE4 = ifelse(apoe == 1, "Carrier", "Non-carrier"),
+      Beta = s["Estimate"], SE = s["Std. Error"],
+      P = s["Pr(>|t|)"], N = nrow(sub), stringsAsFactors = FALSE)
+  }
+
+  list(
+    ols = data.frame(
+      Beta = s_ols["Estimate"], SE = s_ols["Std. Error"],
+      P = s_ols["Pr(>|t|)"], N = nrow(df), stringsAsFactors = FALSE),
+    hc3 = data.frame(
+      Beta = s_hc3["Estimate"], SE = s_hc3["Std. Error"],
+      P = s_hc3["Pr(>|t|)"], N = nrow(df), stringsAsFactors = FALSE),
+    model_fit = data.frame(
+      R2_Base = r2_base, R2_Full = r2_full,
+      Delta_R2 = r2_full - r2_base, stringsAsFactors = FALSE),
+    diagnostics = data.frame(
+      BP_Statistic = as.numeric(bp_test$statistic),
+      BP_P = bp_test$p.value,
+      Heteroscedasticity = bp_test$p.value < 0.05,
+      stringsAsFactors = FALSE),
+    apoe_stratified = do.call(rbind, strat_results),
+    wmh_sd = attr(data, "wmh_sd")
+  )
+}
+
+
+# ==============================================================================
+# 4. HABS: MEDIATION ANALYSIS (Z-SCORED, 5000 BOOTSTRAP)
+# ==============================================================================
+# Per manuscript: "all continuous variables standardized to z-score"
+# Uses Log_WMH_z (already z-scored), Log_pTau217_z, MMSE_z
+
+run_habs_mediation <- function(data, n_boot = 5000) {
+
+  covars <- c("Age", "Gender", "APOE4_Carrier", "Education")
+  req_vars <- c("Log_WMH_z", "Log_pTau217", "MMSE", covars)
+  df <- data[complete.cases(data[, req_vars]), ]
+  df <- df[is.finite(df$Log_pTau217), ]
+
+  # Z-score all continuous variables for mediation
+  df$Log_pTau217_z <- as.numeric(scale(df$Log_pTau217))
+  df$MMSE_z <- as.numeric(scale(df$MMSE))
+  df$Log_WMH_z <- as.numeric(scale(df$Log_WMH_z))  # re-scale within complete cases
+  df$Age_z <- as.numeric(scale(df$Age))
+  df$Education_z <- as.numeric(scale(df$Education))
+
+  # Path a: WMH -> pTau217 (z-scored)
+  fit_m <- lm(Log_pTau217_z ~ Log_WMH_z + Age_z + Gender + APOE4_Carrier +
+                Education_z, data = df)
+
+  # Path b + c': pTau217 + WMH -> MMSE (z-scored)
+  fit_y <- lm(MMSE_z ~ Log_pTau217_z + Log_WMH_z + Age_z + Gender +
+                APOE4_Carrier + Education_z, data = df)
+
+  # Total effect (path c): WMH -> MMSE
+  fit_total <- lm(MMSE_z ~ Log_WMH_z + Age_z + Gender + APOE4_Carrier +
+                    Education_z, data = df)
+
+  # Bootstrap mediation (Imai et al., 5000 iterations)
+  set.seed(2026)
+  med_result <- mediate(fit_m, fit_y, treat = "Log_WMH_z",
+                        mediator = "Log_pTau217_z",
+                        boot = TRUE, sims = n_boot,
+                        boot.ci.type = "bca")
+
+  # Extract path coefficients
+  path_a <- summary(fit_m)$coefficients["Log_WMH_z", ]
+  path_b <- summary(fit_y)$coefficients["Log_pTau217_z", ]
+  path_c_prime <- summary(fit_y)$coefficients["Log_WMH_z", ]
+  path_c <- summary(fit_total)$coefficients["Log_WMH_z", ]
+
+  list(
+    paths = data.frame(
+      Path = c("a (WMH->pTau217)", "b (pTau217->MMSE)",
+               "c' (WMH->MMSE direct)", "c (WMH->MMSE total)"),
+      Beta = c(path_a["Estimate"], path_b["Estimate"],
+               path_c_prime["Estimate"], path_c["Estimate"]),
+      SE = c(path_a["Std. Error"], path_b["Std. Error"],
+             path_c_prime["Std. Error"], path_c["Std. Error"]),
+      P = c(path_a["Pr(>|t|)"], path_b["Pr(>|t|)"],
+            path_c_prime["Pr(>|t|)"], path_c["Pr(>|t|)"]),
+      stringsAsFactors = FALSE),
+    mediation = data.frame(
+      ACME = med_result$d0,
+      ACME_CI_Lower = med_result$d0.ci[1],
+      ACME_CI_Upper = med_result$d0.ci[2],
+      ACME_P = med_result$d0.p,
+      ADE = med_result$z0,
+      ADE_CI_Lower = med_result$z0.ci[1],
+      ADE_CI_Upper = med_result$z0.ci[2],
+      ADE_P = med_result$z0.p,
+      Total = med_result$tau.coef,
+      Total_P = med_result$tau.p,
+      Prop_Mediated = med_result$n0,
+      N = nrow(df), N_Boot = n_boot,
+      stringsAsFactors = FALSE),
+    note = "All continuous variables z-scored per manuscript methods"
+  )
+}
+
+
+# ==============================================================================
+# 5. HABS: SEM CONFIRMATION (5000 BOOTSTRAP, Z-SCORED)
+# ==============================================================================
+
+run_habs_sem <- function(data, n_boot = 5000) {
+
+  covars <- c("Age", "Gender", "APOE4_Carrier", "Education")
+  req_vars <- c("Log_WMH_z", "Log_pTau217", "MMSE", covars)
+  df <- data[complete.cases(data[, req_vars]), ]
+  df <- df[is.finite(df$Log_pTau217), ]
+
+  # Z-score all continuous variables
+  df$Log_pTau217_z <- as.numeric(scale(df$Log_pTau217))
+  df$MMSE_z <- as.numeric(scale(df$MMSE))
+  df$Log_WMH_z <- as.numeric(scale(df$Log_WMH_z))
+  df$Age_z <- as.numeric(scale(df$Age))
+  df$Education_z <- as.numeric(scale(df$Education))
+  df$Gender_Num <- as.numeric(df$Gender) - 1
+
+  sem_model <- '
+    # Direct paths (all z-scored continuous variables)
+    Log_pTau217_z ~ a * Log_WMH_z + Age_z + Gender_Num + APOE4_Carrier + Education_z
+    MMSE_z ~ b * Log_pTau217_z + cp * Log_WMH_z + Age_z + Gender_Num + APOE4_Carrier + Education_z
+
+    # Indirect and total effects
     indirect := a * b
+    total := cp + a * b
+    prop_mediated := (a * b) / (cp + a * b)
   '
-  
-  fit_habs_overall <- tryCatch({
-    sem(sem_model_habs_overall, data = habs_sem, estimator = "MLR", missing = "FIML")
-  }, error = function(e) NULL)
-  
-  # Multi-group model
-  sem_model_habs_free <- '
-    pTau_z ~ c(a1, a2) * APOE4 + Age_z + Gender_num
-    MMSE_z ~ c(b1, b2) * pTau_z + c(c1, c2) * APOE4 + Age_z + Gender_num
-    indirect1 := a1 * b1
-    indirect2 := a2 * b2
-    diff_a := a1 - a2
-    diff_indirect := indirect1 - indirect2
-  '
-  
-  fit_habs_free <- tryCatch({
-    sem(sem_model_habs_free, data = habs_sem, group = "Age_Group",
-        estimator = "MLR", missing = "FIML")
-  }, error = function(e) NULL)
-  
-  if (!is.null(fit_habs_free)) {
-    fit_habs_indices <- fitMeasures(fit_habs_free, c("cfi", "tli", "rmsea", "srmr"))
-    params_habs <- parameterEstimates(fit_habs_free, standardized = TRUE)
-  }
+
+  set.seed(2026)
+  fit <- sem(sem_model, data = df, se = "bootstrap", bootstrap = n_boot,
+             estimator = "ML")
+
+  params <- parameterEstimates(fit, boot.ci.type = "perc")
+  fit_indices <- fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr",
+                                     "chisq", "df", "pvalue"))
+
+  list(
+    parameters = params,
+    fit_indices = as.data.frame(t(fit_indices)),
+    N = nrow(df),
+    note = "5000 bootstrap, all continuous variables z-scored"
+  )
 }
 
-## Section 5.3: Save SEM Results
-sem_results <- list(
-  A4_Overall = if(exists("fit_a4_overall")) fit_a4_overall else NULL,
-  A4_Free = if(exists("fit_a4_free")) fit_a4_free else NULL,
-  A4_Fit_Indices = if(exists("fit_a4_indices")) fit_a4_indices else NULL,
-  HABS_Overall = if(exists("fit_habs_overall")) fit_habs_overall else NULL,
-  HABS_Free = if(exists("fit_habs_free")) fit_habs_free else NULL,
-  HABS_Fit_Indices = if(exists("fit_habs_indices")) fit_habs_indices else NULL
-)
-
-saveRDS(sem_results, "results/SEM_Results.rds")
-
-# Export SEM fit indices table
-if (exists("fit_a4_indices") || exists("fit_habs_indices")) {
-  fit_table <- data.frame(
-    Cohort = c("A4", "HABS"),
-    CFI = c(if(exists("fit_a4_indices")) fit_a4_indices["cfi"] else NA,
-            if(exists("fit_habs_indices")) fit_habs_indices["cfi"] else NA),
-    TLI = c(if(exists("fit_a4_indices")) fit_a4_indices["tli"] else NA,
-            if(exists("fit_habs_indices")) fit_habs_indices["tli"] else NA),
-    RMSEA = c(if(exists("fit_a4_indices")) fit_a4_indices["rmsea"] else NA,
-              if(exists("fit_habs_indices")) fit_habs_indices["rmsea"] else NA),
-    SRMR = c(if(exists("fit_a4_indices")) fit_a4_indices["srmr"] else NA,
-             if(exists("fit_habs_indices")) fit_habs_indices["srmr"] else NA)
-  )
-  fwrite(fit_table, "results/tables/Table_SEM_Fit_Indices.csv")
-}
 
 # ==============================================================================
-# Part 6: Clinical Utility Assessment (Firth, AUC, AUPRC, NRI, IDI, DCA)
+# 6. HABS: AGE-STRATIFIED MEDIATION AND SEM (<75 vs >=75)
 # ==============================================================================
 
-## Section 6.1: HABS Clinical Utility Analysis
-## Outcome: Cognitive impairment (CDR >= 0.5 OR MMSE < 24)
-if ("pTau217" %in% colnames(habs_data) && "Log_WMH" %in% colnames(habs_data) &&
-    "Cognitive_Impairment" %in% colnames(habs_data)) {
-  
-  habs_clinical <- subset(habs_data,
-                          !is.na(Age) & !is.na(Gender_num) & !is.na(APOE4_Carrier) &
-                            !is.na(pTau217) & !is.na(Log_WMH) & !is.na(Cognitive_Impairment)
-  )
-  
-  if (nrow(habs_clinical) >= 100) {
-    
-    ## Section 6.2: Train/Test Split (70/30 with fixed seed)
-    set.seed(42)
-    train_idx <- sample(1:nrow(habs_clinical), size = floor(0.7 * nrow(habs_clinical)))
-    habs_train <- habs_clinical[train_idx, ]
-    habs_test <- habs_clinical[-train_idx, ]
-    
-    ## Section 6.3: Firth-Corrected Logistic Regression
-    model_base <- logistf(Cognitive_Impairment ~ Age + Gender_num + APOE4_Carrier + pTau217,
-                          data = habs_train)
-    model_complete <- logistf(Cognitive_Impairment ~ Age + Gender_num + APOE4_Carrier + 
-                                pTau217 + Log_WMH, data = habs_train)
-    
-    pred_base <- predict(model_base, newdata = habs_test, type = "response")
-    pred_complete <- predict(model_complete, newdata = habs_test, type = "response")
-    
-    ## Section 6.4: ROC/AUC Analysis with DeLong CI
-    roc_base <- roc(habs_test$Cognitive_Impairment, pred_base, quiet = TRUE)
-    roc_complete <- roc(habs_test$Cognitive_Impairment, pred_complete, quiet = TRUE)
-    
-    auc_base <- auc(roc_base)
-    auc_complete <- auc(roc_complete)
-    ci_base <- ci.auc(roc_base)
-    ci_complete <- ci.auc(roc_complete)
-    
-    roc_test <- roc.test(roc_base, roc_complete, method = "delong")
-    
-    ## Section 6.5: AUPRC (Precision-Recall Curve) per methods
-    pr_base <- pr.curve(scores.class0 = pred_base[habs_test$Cognitive_Impairment == 1],
-                        scores.class1 = pred_base[habs_test$Cognitive_Impairment == 0],
-                        curve = TRUE)
-    pr_complete <- pr.curve(scores.class0 = pred_complete[habs_test$Cognitive_Impairment == 1],
-                            scores.class1 = pred_complete[habs_test$Cognitive_Impairment == 0],
-                            curve = TRUE)
-    
-    auprc_base <- pr_base$auc.integral
-    auprc_complete <- pr_complete$auc.integral
-    
-    ## Section 6.6: NRI Analysis with Three Threshold Sets per methods
-    calc_nri <- function(pred_old, pred_new, outcome, thresholds) {
-      cat_old <- cut(pred_old, breaks = thresholds, include.lowest = TRUE)
-      cat_new <- cut(pred_new, breaks = thresholds, include.lowest = TRUE)
-      
-      events_idx <- which(outcome == 1)
-      nonevents_idx <- which(outcome == 0)
-      
-      if (length(events_idx) == 0 || length(nonevents_idx) == 0) {
-        return(list(events_nri = NA, nonevents_nri = NA, total_nri = NA))
-      }
-      
-      events_table <- table(Old = cat_old[events_idx], New = cat_new[events_idx])
-      nonevents_table <- table(Old = cat_old[nonevents_idx], New = cat_new[nonevents_idx])
-      
-      events_up <- sum(events_table[lower.tri(events_table)])
-      events_down <- sum(events_table[upper.tri(events_table)])
-      events_nri <- (events_up - events_down) / length(events_idx)
-      
-      nonevents_down <- sum(nonevents_table[upper.tri(nonevents_table)])
-      nonevents_up <- sum(nonevents_table[lower.tri(nonevents_table)])
-      nonevents_nri <- (nonevents_down - nonevents_up) / length(nonevents_idx)
-      
-      return(list(events_nri = events_nri, nonevents_nri = nonevents_nri,
-                  total_nri = events_nri + nonevents_nri))
+run_habs_age_stratified <- function(data, n_boot = 5000, age_cutoff = 75) {
+
+  covars <- c("Age", "Gender", "APOE4_Carrier", "Education")
+  req_vars <- c("Log_WMH_z", "Log_pTau217", "MMSE", covars)
+  df <- data[complete.cases(data[, req_vars]), ]
+  df <- df[is.finite(df$Log_pTau217), ]
+
+  med_results <- list()
+  sem_results <- list()
+
+  for (grp in c("Younger", "Older")) {
+    sub <- if (grp == "Younger") df[df$Age < age_cutoff, ] else df[df$Age >= age_cutoff, ]
+    if (nrow(sub) < 30) next
+
+    # Z-score within each stratum
+    sub$Log_pTau217_z <- as.numeric(scale(sub$Log_pTau217))
+    sub$MMSE_z <- as.numeric(scale(sub$MMSE))
+    sub$Log_WMH_z <- as.numeric(scale(sub$Log_WMH_z))
+    sub$Age_z <- as.numeric(scale(sub$Age))
+    sub$Education_z <- as.numeric(scale(sub$Education))
+    sub$Gender_Num <- as.numeric(sub$Gender) - 1
+
+    # --- Mediation ---
+    fit_m <- lm(Log_pTau217_z ~ Log_WMH_z + Age_z + Gender + APOE4_Carrier +
+                  Education_z, data = sub)
+    fit_y <- lm(MMSE_z ~ Log_pTau217_z + Log_WMH_z + Age_z + Gender +
+                  APOE4_Carrier + Education_z, data = sub)
+
+    set.seed(2026)
+    med <- tryCatch(
+      mediate(fit_m, fit_y, treat = "Log_WMH_z",
+              mediator = "Log_pTau217_z", boot = TRUE, sims = n_boot,
+              boot.ci.type = "bca"),
+      error = function(e) NULL)
+
+    if (!is.null(med)) {
+      path_a <- summary(fit_m)$coefficients["Log_WMH_z", ]
+      path_b <- summary(fit_y)$coefficients["Log_pTau217_z", ]
+
+      med_results[[grp]] <- data.frame(
+        Age_Group = grp,
+        Age_Range = ifelse(grp == "Younger",
+                           paste0("<", age_cutoff), paste0(">=", age_cutoff)),
+        N = nrow(sub),
+        Path_a_Beta = path_a["Estimate"], Path_a_P = path_a["Pr(>|t|)"],
+        Path_b_Beta = path_b["Estimate"], Path_b_P = path_b["Pr(>|t|)"],
+        ACME = med$d0,
+        ACME_CI_Lower = med$d0.ci[1], ACME_CI_Upper = med$d0.ci[2],
+        ACME_P = med$d0.p,
+        ADE = med$z0, Total = med$tau.coef,
+        Prop_Mediated = med$n0,
+        stringsAsFactors = FALSE)
     }
-    
-    # Three threshold sets per methods
-    thresholds_high <- c(0, 0.20, 0.40, 0.60, 1)      # High event rate
-    thresholds_standard <- c(0, 0.10, 0.20, 1)        # Standard
-    thresholds_fine <- c(0, 0.15, 0.25, 0.35, 0.50, 1) # Fine-grained
-    
-    nri_high <- calc_nri(pred_base, pred_complete, habs_test$Cognitive_Impairment, thresholds_high)
-    nri_standard <- calc_nri(pred_base, pred_complete, habs_test$Cognitive_Impairment, thresholds_standard)
-    nri_fine <- calc_nri(pred_base, pred_complete, habs_test$Cognitive_Impairment, thresholds_fine)
-    
-    ## Section 6.7: IDI Analysis with Bootstrap (1000 iterations)
-    events_idx <- habs_test$Cognitive_Impairment == 1
-    nonevents_idx <- habs_test$Cognitive_Impairment == 0
-    
-    events_improvement <- mean(pred_complete[events_idx]) - mean(pred_base[events_idx])
-    nonevents_improvement <- mean(pred_complete[nonevents_idx]) - mean(pred_base[nonevents_idx])
-    idi_value <- events_improvement - nonevents_improvement
-    
-    set.seed(42)
-    n_bootstrap <- 1000
-    idi_bootstrap <- numeric(n_bootstrap)
-    
-    for (i in 1:n_bootstrap) {
-      boot_idx <- sample(1:nrow(habs_test), replace = TRUE)
-      boot_data <- habs_test[boot_idx, ]
-      boot_events_idx <- boot_data$Cognitive_Impairment == 1
-      boot_nonevents_idx <- boot_data$Cognitive_Impairment == 0
-      
-      if (sum(boot_events_idx) > 0 && sum(boot_nonevents_idx) > 0) {
-        boot_events_imp <- mean(pred_complete[boot_idx][boot_events_idx]) -
-          mean(pred_base[boot_idx][boot_events_idx])
-        boot_nonevents_imp <- mean(pred_complete[boot_idx][boot_nonevents_idx]) -
-          mean(pred_base[boot_idx][boot_nonevents_idx])
-        idi_bootstrap[i] <- boot_events_imp - boot_nonevents_imp
-      } else {
-        idi_bootstrap[i] <- NA
-      }
+
+    # --- Age-stratified SEM ---
+    sem_model <- '
+      Log_pTau217_z ~ a * Log_WMH_z + Age_z + Gender_Num + APOE4_Carrier + Education_z
+      MMSE_z ~ b * Log_pTau217_z + cp * Log_WMH_z + Age_z + Gender_Num + APOE4_Carrier + Education_z
+      indirect := a * b
+      total := cp + a * b
+      prop_mediated := (a * b) / (cp + a * b)
+    '
+
+    set.seed(2026)
+    sem_fit <- tryCatch(
+      sem(sem_model, data = sub, se = "bootstrap", bootstrap = n_boot,
+          estimator = "ML"),
+      error = function(e) NULL)
+
+    if (!is.null(sem_fit)) {
+      params <- parameterEstimates(sem_fit, boot.ci.type = "perc")
+      indirect_row <- params[params$label == "indirect", ]
+      sem_results[[grp]] <- data.frame(
+        Age_Group = grp, N = nrow(sub),
+        SEM_Indirect = indirect_row$est,
+        SEM_Indirect_CI_Lower = indirect_row$ci.lower,
+        SEM_Indirect_CI_Upper = indirect_row$ci.upper,
+        SEM_Indirect_P = indirect_row$pvalue,
+        stringsAsFactors = FALSE)
     }
-    
-    idi_bootstrap <- idi_bootstrap[!is.na(idi_bootstrap)]
-    idi_ci <- quantile(idi_bootstrap, c(0.025, 0.975))
-    idi_p_value <- 2 * min(mean(idi_bootstrap > 0), mean(idi_bootstrap < 0))
-    
-    ## Section 6.8: DCA Analysis (threshold 0.01 to 0.80)
-    calc_net_benefit <- function(pred, outcome, threshold) {
-      if (threshold == 0) return(mean(outcome))
-      if (threshold >= 1) return(0)
-      tp <- sum(pred >= threshold & outcome == 1)
-      fp <- sum(pred >= threshold & outcome == 0)
-      n <- length(outcome)
-      net_benefit <- (tp / n) - (fp / n) * (threshold / (1 - threshold))
-      return(net_benefit)
-    }
-    
-    thresholds_dca <- seq(0.01, 0.80, by = 0.01)
-    nb_base <- sapply(thresholds_dca, function(t) 
-      calc_net_benefit(pred_base, habs_test$Cognitive_Impairment, t))
-    nb_complete <- sapply(thresholds_dca, function(t) 
-      calc_net_benefit(pred_complete, habs_test$Cognitive_Impairment, t))
-    
-    max_benefit_idx <- which.max(nb_complete)
-    optimal_threshold <- thresholds_dca[max_benefit_idx]
-    
-    ## Section 6.9: Save Clinical Utility Results
-    clinical_results <- list(
-      AUC = list(Base = auc_base, Complete = auc_complete, 
-                 Delta = auc_complete - auc_base, P_value = roc_test$p.value,
-                 CI_Base = ci_base, CI_Complete = ci_complete),
-      AUPRC = list(Base = auprc_base, Complete = auprc_complete,
-                   Delta = auprc_complete - auprc_base),
-      NRI = list(High = nri_high, Standard = nri_standard, Fine = nri_fine),
-      IDI = list(Value = idi_value, CI = idi_ci, P_value = idi_p_value),
-      DCA = list(Optimal_Threshold = optimal_threshold)
-    )
-    
-    saveRDS(clinical_results, "results/Clinical_Utility_Results.rds")
-    
-    # Export clinical utility table
-    clinical_table <- data.frame(
-      Metric = c("AUC (Base)", "AUC (Complete)", "ΔAUC", "DeLong P",
-                 "AUPRC (Base)", "AUPRC (Complete)", "ΔAUPRC",
-                 "NRI (High)", "NRI (Standard)", "NRI (Fine)",
-                 "IDI", "IDI 95% CI"),
-      Value = c(
-        sprintf("%.3f (%.3f-%.3f)", auc_base, ci_base[1], ci_base[3]),
-        sprintf("%.3f (%.3f-%.3f)", auc_complete, ci_complete[1], ci_complete[3]),
-        sprintf("%.3f", auc_complete - auc_base),
-        format(roc_test$p.value, scientific = TRUE, digits = 3),
-        sprintf("%.3f", auprc_base),
-        sprintf("%.3f", auprc_complete),
-        sprintf("%.3f", auprc_complete - auprc_base),
-        sprintf("%.3f", nri_high$total_nri),
-        sprintf("%.3f", nri_standard$total_nri),
-        sprintf("%.3f", nri_fine$total_nri),
-        sprintf("%.4f", idi_value),
-        sprintf("%.4f-%.4f", idi_ci[1], idi_ci[2])
-      )
-    )
-    fwrite(clinical_table, "results/tables/Table_Clinical_Utility.csv")
   }
-}
 
-# ==============================================================================
-# Part 7: AIBL Cox Regression and AFT Models
-# ==============================================================================
-
-## Section 7.1: Prepare Survival Data
-aibl_surv <- subset(aibl_merged,
-                    !is.na(Time) & is.finite(Time) & Time > 0 & 
-                      !is.na(APOE4_Carrier) & !is.na(Age) & !is.na(Event)
-)
-aibl_surv$Gender_num <- as.numeric(as.factor(aibl_surv$Gender))
-
-if (nrow(aibl_surv) >= 50 && sum(aibl_surv$Event, na.rm = TRUE) >= 10) {
-  
-  ## Section 7.2: Cox Proportional Hazards Regression
-  cox_base <- coxph(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender_num, 
-                    data = aibl_surv)
-  
-  # Cox with age interaction
-  cox_interaction <- coxph(Surv(Time, Event) ~ APOE4_Carrier * Age + Gender_num, 
-                           data = aibl_surv)
-  
-  # Extract HR and 95% CI
-  hr_apoe4 <- exp(coef(cox_base)["APOE4_Carrier"])
-  hr_ci <- exp(confint(cox_base)["APOE4_Carrier", ])
-  
-  # Test proportional hazards assumption
-  ph_test <- cox.zph(cox_base)
-  
-  ## Section 7.3: Accelerated Failure Time Model (Weibull distribution)
-  aft_model <- survreg(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender_num,
-                       data = aibl_surv, dist = "weibull")
-  
-  # Acceleration factor (time ratio)
-  af_apoe4 <- exp(-coef(aft_model)["APOE4_Carrier"])
-  
-  ## Section 7.4: Age-Stratified Cox Regression
-  cox_younger <- tryCatch({
-    coxph(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender_num,
-          data = aibl_surv[aibl_surv$Age_Group == "Younger (<70)", ])
-  }, error = function(e) NULL)
-  
-  cox_older <- tryCatch({
-    coxph(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender_num,
-          data = aibl_surv[aibl_surv$Age_Group == "Older (>=70)", ])
-  }, error = function(e) NULL)
-  
-  ## Section 7.5: Save Survival Results
-  survival_results <- list(
-    Cox_Base = cox_base,
-    Cox_Interaction = cox_interaction,
-    HR_APOE4 = hr_apoe4,
-    HR_CI = hr_ci,
-    PH_Test = ph_test,
-    AFT = aft_model,
-    AF_APOE4 = af_apoe4,
-    Cox_Younger = cox_younger,
-    Cox_Older = cox_older
+  list(
+    mediation = do.call(rbind, med_results),
+    sem = do.call(rbind, sem_results)
   )
-  
-  saveRDS(survival_results, "results/Survival_Results.rds")
-  
-  # Export survival results table
-  surv_table <- data.frame(
-    Model = c("Cox Overall", "AFT Weibull"),
-    N = rep(nrow(aibl_surv), 2),
-    N_Events = rep(sum(aibl_surv$Event), 2),
-    APOE4_Effect = c(
-      sprintf("HR=%.2f (%.2f-%.2f)", hr_apoe4, hr_ci[1], hr_ci[2]),
-      sprintf("AF=%.2f", af_apoe4)
-    ),
-    P_value = c(
-      format(summary(cox_base)$coefficients["APOE4_Carrier", "Pr(>|z|)"], 
-             scientific = TRUE, digits = 3),
-      format(summary(aft_model)$table["APOE4_Carrier", "p"], 
-             scientific = TRUE, digits = 3)
-    )
-  )
-  fwrite(surv_table, "results/tables/Table_Survival_Results.csv")
 }
+
 
 # ==============================================================================
-# Part 8: Visualization
+# 7. HABS: AGE INTERACTION TESTS
 # ==============================================================================
 
-## Section 8.1: A4 PACC vs Age by APOE4 Status
-if (exists("a4_merged") && "PACC" %in% colnames(a4_merged)) {
-  plot_data <- a4_merged[!is.na(a4_merged$PACC) & !is.na(a4_merged$Age) & 
-                           !is.na(a4_merged$APOE4_Status), ]
-  
-  if (nrow(plot_data) > 50) {
-    p_a4_pacc <- ggplot(plot_data, aes(x = Age, y = PACC, color = APOE4_Status)) +
-      geom_point(alpha = 0.4, size = 1.5) +
-      geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
-      scale_color_manual(values = c("APOE4-" = "#2166AC", "APOE4+" = "#B2182B")) +
-      labs(title = "A4: PACC vs Age by APOE4 Status",
-           x = "Age (years)", y = "PACC Score", color = "APOE4 Status") +
-      theme_nc
-    
-    ggsave("results/figures/Figure_A4_PACC_Age_APOE4.pdf", p_a4_pacc, 
-           width = 8, height = 6, dpi = 300)
+run_habs_age_interaction <- function(data) {
+
+  covars <- c("Gender", "APOE4_Carrier", "Education")
+  df <- data[complete.cases(data[, c("Log_WMH_z", "Log_pTau217", "MMSE",
+                                      "Age", covars)]), ]
+  df <- df[is.finite(df$Log_pTau217), ]
+
+  # Age x WMH interaction on pTau217
+  fit_wmh_int <- lm(Log_pTau217 ~ Log_WMH_z * Age + Gender +
+                      APOE4_Carrier + Education, data = df)
+  s_wmh <- summary(fit_wmh_int)$coefficients
+
+  # Age x pTau217 interaction on MMSE
+  fit_ptau_int <- lm(MMSE ~ Log_pTau217 * Age + Gender +
+                       APOE4_Carrier + Education, data = df)
+  s_ptau <- summary(fit_ptau_int)$coefficients
+
+  results <- list()
+  if ("Log_WMH_z:Age" %in% rownames(s_wmh)) {
+    results$wmh_age <- data.frame(
+      Interaction = "WMH x Age -> pTau217",
+      Beta = s_wmh["Log_WMH_z:Age", "Estimate"],
+      SE = s_wmh["Log_WMH_z:Age", "Std. Error"],
+      P = s_wmh["Log_WMH_z:Age", "Pr(>|t|)"],
+      N = nrow(df), stringsAsFactors = FALSE)
   }
+  if ("Log_pTau217:Age" %in% rownames(s_ptau)) {
+    results$ptau_age <- data.frame(
+      Interaction = "pTau217 x Age -> MMSE",
+      Beta = s_ptau["Log_pTau217:Age", "Estimate"],
+      SE = s_ptau["Log_pTau217:Age", "Std. Error"],
+      P = s_ptau["Log_pTau217:Age", "Pr(>|t|)"],
+      N = nrow(df), stringsAsFactors = FALSE)
+  }
+
+  do.call(rbind, results)
 }
 
-## Section 8.2: A4 Centiloid vs Age by APOE4 Status
-if (exists("a4_merged") && "Centiloid" %in% colnames(a4_merged)) {
-  plot_data <- a4_merged[!is.na(a4_merged$Centiloid) & !is.na(a4_merged$Age) & 
-                           !is.na(a4_merged$APOE4_Status), ]
-  
-  if (nrow(plot_data) > 50) {
-    p_a4_centiloid <- ggplot(plot_data, aes(x = Age, y = Centiloid, color = APOE4_Status)) +
-      geom_point(alpha = 0.4, size = 1.5) +
-      geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
-      scale_color_manual(values = c("APOE4-" = "#2166AC", "APOE4+" = "#B2182B")) +
-      geom_hline(yintercept = 20, linetype = "dashed", color = "gray50") +
-      labs(title = "A4: Amyloid Burden vs Age by APOE4 Status",
-           x = "Age (years)", y = "Centiloid", color = "APOE4 Status") +
-      theme_nc
-    
-    ggsave("results/figures/Figure_A4_Centiloid_Age_APOE4.pdf", p_a4_centiloid, 
-           width = 8, height = 6, dpi = 300)
-  }
-}
 
-## Section 8.3: HABS pTau217 vs Age by APOE4 Status
-if (exists("habs_data") && "pTau217" %in% colnames(habs_data)) {
-  plot_data <- habs_data[!is.na(habs_data$pTau217) & !is.na(habs_data$Age) & 
-                           !is.na(habs_data$APOE4_Status), ]
-  
-  if (nrow(plot_data) > 30) {
-    p_habs_ptau <- ggplot(plot_data, aes(x = Age, y = pTau217, color = APOE4_Status)) +
-      geom_point(alpha = 0.4, size = 1.5) +
-      geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
-      scale_color_manual(values = c("APOE4-" = "#2166AC", "APOE4+" = "#B2182B")) +
-      labs(title = "HABS: Plasma pTau217 vs Age by APOE4 Status",
-           x = "Age (years)", y = "Plasma pTau217 (pg/mL)", color = "APOE4 Status") +
-      theme_nc
-    
-    ggsave("results/figures/Figure_HABS_pTau_Age_APOE4.pdf", p_habs_ptau, 
-           width = 8, height = 6, dpi = 300)
-  }
-}
+# ==============================================================================
+# 8. HABS: CLINICAL UTILITY (TRAIN/TEST, FIRTH, AUC, PR-AUC, NRI/IDI, DCA)
+# ==============================================================================
+# Per manuscript: train/test split, PR-AUC, NRI multi-threshold with bootstrap,
+# IDI with bootstrap CI, DCA to 0.80
 
-## Section 8.4: AIBL Kaplan-Meier Survival Curves
-if (exists("aibl_surv") && nrow(aibl_surv) > 50) {
-  km_apoe <- survfit(Surv(Time, Event) ~ APOE4_Status, data = aibl_surv)
-  
-  p_km <- ggsurvplot(
-    km_apoe, data = aibl_surv,
-    pval = TRUE, pval.method = TRUE,
-    conf.int = TRUE, risk.table = TRUE,
-    palette = c("#2166AC", "#B2182B"),
-    xlab = "Time (months)", ylab = "Conversion-free Probability",
-    title = "AIBL: AD Conversion by APOE4 Status",
-    legend.title = "APOE4", legend.labs = c("APOE4-", "APOE4+"),
-    ggtheme = theme_nc
+run_habs_clinical_utility <- function(data, seed = 2026, n_boot_nri = 1000) {
+
+  # AD_Conversion constructed in load_habs_data: CDR>=0.5 OR MMSE<24
+  if (!"AD_Conversion" %in% colnames(data) || all(is.na(data$AD_Conversion))) {
+    return(list(message = "AD_Conversion variable not available"))
+  }
+
+  covars <- c("Age", "Gender", "APOE4_Carrier", "Education")
+  df <- data[complete.cases(data[, c("Log_WMH_z", "Log_pTau217",
+                                      "AD_Conversion", covars)]), ]
+  if (nrow(df) < 30 || sum(df$AD_Conversion) < 5) {
+    return(list(message = "Insufficient events for clinical utility analysis"))
+  }
+
+  # --- Train/test split (70/30, fixed seed) ---
+  set.seed(seed)
+  train_idx <- sample(seq_len(nrow(df)), size = floor(0.7 * nrow(df)))
+  train <- df[train_idx, ]
+  test <- df[-train_idx, ]
+
+  cat(sprintf("  Train: N=%d (events=%d), Test: N=%d (events=%d)\n",
+              nrow(train), sum(train$AD_Conversion),
+              nrow(test), sum(test$AD_Conversion)))
+
+  # --- Firth-corrected logistic regression ---
+  fit_base <- logistf(AD_Conversion ~ Age + Gender + APOE4_Carrier + Education,
+                      data = train)
+  fit_full <- logistf(AD_Conversion ~ Age + Gender + APOE4_Carrier + Education +
+                        Log_WMH_z + Log_pTau217, data = train)
+
+  # --- Predictions on TEST set ---
+  pred_base <- predict(fit_base, newdata = test, type = "response")
+  pred_full <- predict(fit_full, newdata = test, type = "response")
+
+  # --- AUC (ROC) ---
+  roc_base <- roc(test$AD_Conversion, pred_base, quiet = TRUE)
+  roc_full <- roc(test$AD_Conversion, pred_full, quiet = TRUE)
+  delong_test <- roc.test(roc_base, roc_full, method = "delong")
+
+  auc_comparison <- data.frame(
+    Model = c("Base", "Base+WMH+pTau217"),
+    AUC = c(auc(roc_base), auc(roc_full)),
+    stringsAsFactors = FALSE)
+
+  # --- PR-AUC ---
+  pr_base <- pr.curve(scores.class0 = pred_base[test$AD_Conversion == 1],
+                      scores.class1 = pred_base[test$AD_Conversion == 0])
+  pr_full <- pr.curve(scores.class0 = pred_full[test$AD_Conversion == 1],
+                      scores.class1 = pred_full[test$AD_Conversion == 0])
+
+  prauc_comparison <- data.frame(
+    Model = c("Base", "Base+WMH+pTau217"),
+    PR_AUC = c(pr_base$auc.integral, pr_full$auc.integral),
+    stringsAsFactors = FALSE)
+
+  # --- NRI with bootstrap CI ---
+  thresholds <- c(0.10, 0.20, 0.30)
+  nri_results <- compute_nri_bootstrap(test$AD_Conversion, pred_base, pred_full,
+                                        thresholds = thresholds,
+                                        n_boot = n_boot_nri, seed = seed)
+
+  # --- IDI with bootstrap CI ---
+  idi_results <- compute_idi_bootstrap(test$AD_Conversion, pred_base, pred_full,
+                                       n_boot = n_boot_nri, seed = seed)
+
+  # --- Decision Curve Analysis (0.01 to 0.80 per manuscript) ---
+  dca_results <- compute_dca(test$AD_Conversion, pred_base, pred_full,
+                             thresholds = seq(0.01, 0.80, by = 0.01))
+
+  list(
+    auc = auc_comparison,
+    prauc = prauc_comparison,
+    delong_p = delong_test$p.value,
+    nri = nri_results,
+    idi = idi_results,
+    dca = dca_results,
+    N_Train = nrow(train),
+    N_Test = nrow(test),
+    N_Events_Train = sum(train$AD_Conversion),
+    N_Events_Test = sum(test$AD_Conversion),
+    split_seed = seed
   )
-  
-  ggsave("results/figures/Figure_AIBL_KM_Curve.pdf", p_km$plot, 
-         width = 10, height = 8, dpi = 300)
 }
 
-## Section 8.5: ROC Curve Comparison (HABS)
-if (exists("roc_base") && exists("roc_complete")) {
-  p_roc <- ggplot() +
-    geom_line(aes(x = 1 - roc_base$specificities, y = roc_base$sensitivities,
-                  color = "Base Model (pTau217)"), linewidth = 1.2) +
-    geom_line(aes(x = 1 - roc_complete$specificities, y = roc_complete$sensitivities,
-                  color = "Complete Model (+WMH)"), linewidth = 1.2) +
-    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
-    scale_color_manual(values = c("Base Model (pTau217)" = "#E69F00",
-                                  "Complete Model (+WMH)" = "#009E73")) +
-    labs(title = "HABS: ROC Curve Comparison",
-         subtitle = sprintf("Base AUC=%.3f, Complete AUC=%.3f, ΔAUC=%.3f (p=%.4e)",
-                            auc_base, auc_complete, auc_complete - auc_base, roc_test$p.value),
-         x = "1 - Specificity", y = "Sensitivity") +
-    theme_nc +
-    theme(legend.position = c(0.7, 0.2), legend.title = element_blank())
-  
-  ggsave("results/figures/Figure_HABS_ROC_Comparison.pdf", p_roc, 
-         width = 8, height = 6, dpi = 300)
+# --- NRI with bootstrap CI/P ---
+compute_nri_bootstrap <- function(outcome, pred_old, pred_new,
+                                   thresholds = c(0.10, 0.20, 0.30),
+                                   n_boot = 1000, seed = 2026) {
+
+  compute_nri_single <- function(outcome, pred_old, pred_new, thresh) {
+    class_old <- as.integer(pred_old >= thresh)
+    class_new <- as.integer(pred_new >= thresh)
+    events <- outcome == 1
+    nonevents <- outcome == 0
+    if (sum(events) == 0 || sum(nonevents) == 0) return(c(NA, NA, NA))
+
+    up_event <- sum(class_new[events] > class_old[events])
+    down_event <- sum(class_new[events] < class_old[events])
+    nri_event <- (up_event - down_event) / sum(events)
+
+    up_nonevent <- sum(class_new[nonevents] > class_old[nonevents])
+    down_nonevent <- sum(class_new[nonevents] < class_old[nonevents])
+    nri_nonevent <- (down_nonevent - up_nonevent) / sum(nonevents)
+
+    c(nri_event, nri_nonevent, nri_event + nri_nonevent)
+  }
+
+  results <- list()
+  for (thresh in thresholds) {
+    obs_nri <- compute_nri_single(outcome, pred_old, pred_new, thresh)
+
+    # Bootstrap
+    set.seed(seed)
+    boot_nri <- replicate(n_boot, {
+      idx <- sample(length(outcome), replace = TRUE)
+      compute_nri_single(outcome[idx], pred_old[idx], pred_new[idx], thresh)
+    })
+
+    boot_total <- boot_nri[3, ]
+    boot_total <- boot_total[!is.na(boot_total)]
+
+    results[[length(results) + 1]] <- data.frame(
+      Threshold = thresh,
+      NRI_Event = obs_nri[1], NRI_NonEvent = obs_nri[2],
+      NRI_Total = obs_nri[3],
+      NRI_CI_Lower = quantile(boot_total, 0.025, na.rm = TRUE),
+      NRI_CI_Upper = quantile(boot_total, 0.975, na.rm = TRUE),
+      NRI_P = mean(boot_total <= 0, na.rm = TRUE),
+      stringsAsFactors = FALSE)
+  }
+
+  do.call(rbind, results)
 }
 
-## Section 8.6: DCA Decision Curve
-if (exists("thresholds_dca") && exists("nb_base") && exists("nb_complete")) {
-  nb_all <- sapply(thresholds_dca, function(t) {
-    event_rate <- mean(habs_test$Cognitive_Impairment)
-    if (t >= 1) return(0)
-    event_rate - (1 - event_rate) * (t / (1 - t))
+# --- IDI with bootstrap CI/P ---
+compute_idi_bootstrap <- function(outcome, pred_old, pred_new,
+                                   n_boot = 1000, seed = 2026) {
+
+  compute_idi_single <- function(outcome, pred_old, pred_new) {
+    idi_event <- mean(pred_new[outcome == 1]) - mean(pred_old[outcome == 1])
+    idi_nonevent <- mean(pred_new[outcome == 0]) - mean(pred_old[outcome == 0])
+    c(idi_event - idi_nonevent, idi_event, idi_nonevent)
+  }
+
+  obs_idi <- compute_idi_single(outcome, pred_old, pred_new)
+
+  set.seed(seed)
+  boot_idi <- replicate(n_boot, {
+    idx <- sample(length(outcome), replace = TRUE)
+    compute_idi_single(outcome[idx], pred_old[idx], pred_new[idx])
   })
-  nb_none <- rep(0, length(thresholds_dca))
-  
-  dca_data <- data.frame(
-    Threshold = rep(thresholds_dca, 4),
-    Net_Benefit = c(nb_base, nb_complete, nb_all, nb_none),
-    Strategy = rep(c("Base Model", "Complete Model", "Treat All", "Treat None"),
-                   each = length(thresholds_dca))
-  )
-  
-  p_dca <- ggplot(dca_data, aes(x = Threshold, y = Net_Benefit, color = Strategy)) +
-    geom_line(linewidth = 1.2) +
-    geom_vline(xintercept = optimal_threshold, linetype = "dotted", color = "red") +
-    scale_color_manual(values = c("Base Model" = "#E69F00", "Complete Model" = "#009E73",
-                                  "Treat All" = "#999999", "Treat None" = "#000000")) +
-    labs(title = "Decision Curve Analysis",
-         subtitle = sprintf("Optimal threshold: %.3f", optimal_threshold),
-         x = "Risk Threshold", y = "Net Benefit") +
-    theme_nc +
-    theme(legend.position = c(0.7, 0.8))
-  
-  ggsave("results/figures/Figure_HABS_DCA.pdf", p_dca, width = 10, height = 6, dpi = 300)
+
+  boot_total <- boot_idi[1, ]
+
+  data.frame(
+    IDI = obs_idi[1], IDI_Event = obs_idi[2], IDI_NonEvent = obs_idi[3],
+    IDI_CI_Lower = quantile(boot_total, 0.025, na.rm = TRUE),
+    IDI_CI_Upper = quantile(boot_total, 0.975, na.rm = TRUE),
+    IDI_P = mean(boot_total <= 0, na.rm = TRUE),
+    stringsAsFactors = FALSE)
 }
 
+# --- DCA (0.01 to 0.80 per manuscript) ---
+compute_dca <- function(outcome, pred_base, pred_full,
+                        thresholds = seq(0.01, 0.80, by = 0.01)) {
+
+  n <- length(outcome)
+  prevalence <- mean(outcome)
+
+  dca_results <- list()
+  for (pt in thresholds) {
+    odds <- pt / (1 - pt)
+    nb_all <- prevalence - (1 - prevalence) * odds
+
+    tp_base <- sum(pred_base >= pt & outcome == 1)
+    fp_base <- sum(pred_base >= pt & outcome == 0)
+    nb_base <- tp_base / n - fp_base / n * odds
+
+    tp_full <- sum(pred_full >= pt & outcome == 1)
+    fp_full <- sum(pred_full >= pt & outcome == 0)
+    nb_full <- tp_full / n - fp_full / n * odds
+
+    dca_results[[length(dca_results) + 1]] <- data.frame(
+      Threshold = pt,
+      NB_TreatAll = nb_all, NB_Base = nb_base, NB_Full = nb_full,
+      stringsAsFactors = FALSE)
+  }
+
+  do.call(rbind, dca_results)
+}
+
+
 # ==============================================================================
-# Part 9: Results Summary
+# 9. AIBL: SURVIVAL ANALYSIS (COX PH, KM, AFT; TIME IN MONTHS)
 # ==============================================================================
 
-## Section 9.1: Sample Size Summary
-sample_summary <- data.frame(
-  Cohort = c("A4", "HABS", "AIBL"),
-  N_Total = c(
-    if(exists("a4_merged")) nrow(a4_merged) else NA,
-    if(exists("habs_data")) nrow(habs_data) else NA,
-    if(exists("aibl_merged")) nrow(aibl_merged) else NA
-  ),
-  N_APOE4_Pos = c(
-    if(exists("a4_merged")) sum(a4_merged$APOE4_Carrier == 1, na.rm = TRUE) else NA,
-    if(exists("habs_data")) sum(habs_data$APOE4_Carrier == 1, na.rm = TRUE) else NA,
-    if(exists("aibl_merged")) sum(aibl_merged$APOE4_Carrier == 1, na.rm = TRUE) else NA
-  ),
-  N_Younger = c(
-    if(exists("a4_merged")) sum(a4_merged$Age_Group == "Younger (<70)", na.rm = TRUE) else NA,
-    if(exists("habs_data")) sum(habs_data$Age_Group == "Younger (<70)", na.rm = TRUE) else NA,
-    if(exists("aibl_merged")) sum(aibl_merged$Age_Group == "Younger (<70)", na.rm = TRUE) else NA
-  ),
-  N_Older = c(
-    if(exists("a4_merged")) sum(a4_merged$Age_Group == "Older (>=70)", na.rm = TRUE) else NA,
-    if(exists("habs_data")) sum(habs_data$Age_Group == "Older (>=70)", na.rm = TRUE) else NA,
-    if(exists("aibl_merged")) sum(aibl_merged$Age_Group == "Older (>=70)", na.rm = TRUE) else NA
-  ),
-  Primary_Analysis = c("Multi-group SEM", "Clinical Utility", "Survival Analysis")
-)
+run_aibl_survival <- function(data) {
 
-fwrite(sample_summary, "results/tables/Table_Sample_Summary.csv")
+  df <- data[complete.cases(data[, c("Age", "Gender", "APOE4_Carrier",
+                                      "Time", "Event")]), ]
 
-## Section 9.2: Save Complete Results
-all_results <- list(
-  a4_data = if(exists("a4_merged")) a4_merged else NULL,
-  habs_data = if(exists("habs_data")) habs_data else NULL,
-  aibl_data = if(exists("aibl_merged")) aibl_merged else NULL,
-  sem_results = if(exists("sem_results")) sem_results else NULL,
-  clinical_results = if(exists("clinical_results")) clinical_results else NULL,
-  survival_results = if(exists("survival_results")) survival_results else NULL,
-  analysis_date = Sys.time(),
-  r_version = R.version.string
-)
+  # Remove Time == 0 (no follow-up, QC per original code)
+  df <- df[df$Time > 0, ]
 
-saveRDS(all_results, "results/Complete_Analysis_Results.rds")
+  # Time is in MONTHS (from VISCODE m06, m18, m36, etc.)
+  cat(sprintf("  AIBL survival: Time in MONTHS (median=%.1f, max=%.1f)\n",
+              median(df$Time), max(df$Time)))
 
-## Section 9.3: Print Summary
-cat("\n")
-cat("================================================================================\n")
-cat("  A4/HABS/AIBL Validation Analysis Complete\n")
-cat("================================================================================\n")
-cat("\nOutput files:\n")
-cat("  Data:\n")
-cat("    - results/A4_Integrated_Data.csv\n")
-cat("    - results/HABS_Integrated_Data.csv\n")
-cat("    - results/AIBL_Integrated_Data.csv\n")
-cat("  Tables:\n")
-cat("    - results/tables/Table_Sample_Summary.csv\n")
-cat("    - results/tables/Table_SEM_Fit_Indices.csv\n")
-cat("    - results/tables/Table_Clinical_Utility.csv\n")
-cat("    - results/tables/Table_Survival_Results.csv\n")
-cat("  Figures:\n")
-cat("    - results/figures/Figure_A4_PACC_Age_APOE4.pdf\n")
-cat("    - results/figures/Figure_A4_Centiloid_Age_APOE4.pdf\n")
-cat("    - results/figures/Figure_HABS_pTau_Age_APOE4.pdf\n")
-cat("    - results/figures/Figure_AIBL_KM_Curve.pdf\n")
-cat("    - results/figures/Figure_HABS_ROC_Comparison.pdf\n")
-cat("    - results/figures/Figure_HABS_DCA.pdf\n")
-cat("\n")
+  # Cox proportional hazards
+  cox_fit <- coxph(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender, data = df)
+  cox_summary <- summary(cox_fit)
 
-sessionInfo()
+  cox_results <- data.frame(
+    Variable = rownames(cox_summary$coefficients),
+    HR = cox_summary$coefficients[, "exp(coef)"],
+    HR_Lower = cox_summary$conf.int[, "lower .95"],
+    HR_Upper = cox_summary$conf.int[, "upper .95"],
+    P = cox_summary$coefficients[, "Pr(>|z|)"],
+    stringsAsFactors = FALSE)
+
+  # PH assumption test (Schoenfeld residuals)
+  ph_test <- cox.zph(cox_fit)
+  ph_results <- data.frame(
+    Variable = rownames(ph_test$table),
+    Chisq = ph_test$table[, "chisq"],
+    P = ph_test$table[, "p"],
+    stringsAsFactors = FALSE)
+
+  # Kaplan-Meier by APOE4
+  km_fit <- survfit(Surv(Time, Event) ~ APOE4_Carrier, data = df)
+  logrank <- survdiff(Surv(Time, Event) ~ APOE4_Carrier, data = df)
+  logrank_p <- 1 - pchisq(logrank$chisq, df = 1)
+
+  # Age-stratified Cox
+  age_median <- median(df$Age, na.rm = TRUE)
+  strat_results <- list()
+  for (grp in c("Younger", "Older")) {
+    sub <- if (grp == "Younger") df[df$Age < age_median, ] else df[df$Age >= age_median, ]
+    if (nrow(sub) < 20 || sum(sub$Event) < 5) next
+
+    fit <- coxph(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender, data = sub)
+    s <- summary(fit)
+    apoe_row <- which(rownames(s$coefficients) == "APOE4_Carrier")
+    if (length(apoe_row) == 0) next
+
+    strat_results[[grp]] <- data.frame(
+      Age_Group = grp,
+      HR = s$coefficients[apoe_row, "exp(coef)"],
+      HR_Lower = s$conf.int[apoe_row, "lower .95"],
+      HR_Upper = s$conf.int[apoe_row, "upper .95"],
+      P = s$coefficients[apoe_row, "Pr(>|z|)"],
+      N = nrow(sub), N_Events = sum(sub$Event),
+      stringsAsFactors = FALSE)
+  }
+
+  # AFT model (Weibull)
+  aft_fit <- survreg(Surv(Time, Event) ~ APOE4_Carrier + Age + Gender,
+                     data = df, dist = "weibull")
+  aft_summary <- summary(aft_fit)
+  aft_results <- data.frame(
+    Variable = rownames(aft_summary$table),
+    Coefficient = aft_summary$table[, "Value"],
+    SE = aft_summary$table[, "Std. Error"],
+    P = aft_summary$table[, "p"],
+    TR = exp(aft_summary$table[, "Value"]),
+    stringsAsFactors = FALSE)
+
+  list(
+    cox = cox_results,
+    ph_test = ph_results,
+    km_fit = km_fit,
+    logrank_p = logrank_p,
+    age_stratified = do.call(rbind, strat_results),
+    aft = aft_results,
+    N = nrow(df),
+    N_Events = sum(df$Event),
+    Median_Followup_Months = median(df$Time, na.rm = TRUE),
+    Time_Unit = "months"
+  )
+}
 
 
+# ==============================================================================
+# 10. MISSING DATA AND SELECTION BIAS ASSESSMENT
+# ==============================================================================
+# Uses SMD (Standardized Mean Difference) for both numeric and categorical
+# variables. SMD < 0.1 = negligible, 0.1-0.2 = small, 0.2-0.5 = moderate
 
+run_missing_data_assessment <- function(a4_data, habs_data, aibl_data) {
+
+  # --- Helper: compute SMD for numeric variable ---
+  smd_numeric <- function(x1, x2) {
+    m1 <- mean(x1, na.rm = TRUE)
+    m2 <- mean(x2, na.rm = TRUE)
+    s1 <- sd(x1, na.rm = TRUE)
+    s2 <- sd(x2, na.rm = TRUE)
+    n1 <- sum(!is.na(x1))
+    n2 <- sum(!is.na(x2))
+    pooled_sd <- sqrt(((n1 - 1) * s1^2 + (n2 - 1) * s2^2) / (n1 + n2 - 2))
+    if (pooled_sd == 0) return(0)
+    (m1 - m2) / pooled_sd
+  }
+
+  # --- Helper: compute SMD for binary/categorical variable ---
+  smd_binary <- function(x1, x2) {
+    p1 <- mean(x1, na.rm = TRUE)
+    p2 <- mean(x2, na.rm = TRUE)
+    pooled_p <- (sum(x1, na.rm = TRUE) + sum(x2, na.rm = TRUE)) /
+                (sum(!is.na(x1)) + sum(!is.na(x2)))
+    denom <- sqrt(pooled_p * (1 - pooled_p))
+    if (denom == 0) return(0)
+    (p1 - p2) / denom
+  }
+
+  # --- Helper: assess one cohort ---
+  assess_cohort <- function(data, complete_flag, cohort_name,
+                            numeric_vars, binary_vars) {
+    included <- data[complete_flag, ]
+    excluded <- data[!complete_flag, ]
+
+    if (nrow(excluded) == 0) {
+      return(list(
+        summary = data.frame(
+          Cohort = cohort_name, Total_N = nrow(data),
+          Complete_N = nrow(included), Excluded_N = 0,
+          Completion_Rate = 100.0, Max_SMD = 0, Mean_SMD = 0,
+          Bias_Level = "None", stringsAsFactors = FALSE),
+        details = data.frame(
+          Cohort = cohort_name, Variable = "N/A", SMD = 0,
+          Note = "100% complete cases", stringsAsFactors = FALSE)
+      ))
+    }
+
+    smd_vals <- c()
+    detail_rows <- list()
+
+    # Numeric variables
+    for (v in numeric_vars) {
+      if (v %in% colnames(data) && sum(!is.na(included[[v]])) > 1 &&
+          sum(!is.na(excluded[[v]])) > 1) {
+        s <- smd_numeric(included[[v]], excluded[[v]])
+        smd_vals <- c(smd_vals, abs(s))
+        detail_rows[[length(detail_rows) + 1]] <- data.frame(
+          Cohort = cohort_name, Variable = v, SMD = round(s, 3),
+          Type = "Numeric", stringsAsFactors = FALSE)
+      }
+    }
+
+    # Binary/categorical variables (Gender as Female proportion, APOE4)
+    for (v in binary_vars) {
+      if (v %in% colnames(data)) {
+        vals_inc <- included[[v]]
+        vals_exc <- excluded[[v]]
+
+        # Convert factor Gender to numeric (Female=1)
+        if (is.factor(vals_inc)) {
+          vals_inc <- as.integer(vals_inc == "Female")
+          vals_exc <- as.integer(vals_exc == "Female")
+        }
+
+        if (sum(!is.na(vals_inc)) > 0 && sum(!is.na(vals_exc)) > 0) {
+          s <- smd_binary(vals_inc, vals_exc)
+          smd_vals <- c(smd_vals, abs(s))
+          detail_rows[[length(detail_rows) + 1]] <- data.frame(
+            Cohort = cohort_name, Variable = v, SMD = round(s, 3),
+            Type = "Categorical", stringsAsFactors = FALSE)
+        }
+      }
+    }
+
+    max_smd <- if (length(smd_vals) > 0) max(smd_vals) else NA
+    mean_smd <- if (length(smd_vals) > 0) mean(smd_vals) else NA
+
+    bias_level <- if (is.na(max_smd)) "Unknown"
+                  else if (max_smd < 0.1) "Negligible"
+                  else if (max_smd < 0.2) "Small"
+                  else if (max_smd < 0.5) "Moderate"
+                  else "Large"
+
+    list(
+      summary = data.frame(
+        Cohort = cohort_name, Total_N = nrow(data),
+        Complete_N = nrow(included), Excluded_N = nrow(excluded),
+        Completion_Rate = round(100 * nrow(included) / nrow(data), 1),
+        Max_SMD = round(max_smd, 3), Mean_SMD = round(mean_smd, 3),
+        Bias_Level = bias_level, stringsAsFactors = FALSE),
+      details = do.call(rbind, detail_rows)
+    )
+  }
+
+  # --- A4: complete case definition ---
+  a4_complete <- complete.cases(a4_data[, c("Log_WMH_z", "PACC", "Age",
+                                             "Gender", "APOE4_Carrier",
+                                             "Education", "Centiloid")])
+  a4_res <- assess_cohort(a4_data, a4_complete, "A4",
+                          numeric_vars = c("Age", "Education", "Centiloid",
+                                           "Log_WMH_Raw", "PACC"),
+                          binary_vars = c("Gender", "APOE4_Carrier"))
+
+  # --- HABS: complete case definition ---
+  habs_complete <- complete.cases(habs_data[, c("Log_WMH_z", "Log_pTau217",
+                                                 "Age", "Gender",
+                                                 "APOE4_Carrier", "Education")])
+  habs_res <- assess_cohort(habs_data, habs_complete, "HABS",
+                            numeric_vars = c("Age", "Education", "Log_WMH_Raw",
+                                             "Log_pTau217", "MMSE"),
+                            binary_vars = c("Gender", "APOE4_Carrier"))
+
+  # --- AIBL: complete case definition ---
+  aibl_complete <- complete.cases(aibl_data[, c("Age", "Gender",
+                                                 "APOE4_Carrier",
+                                                 "Time", "Event")])
+  aibl_res <- assess_cohort(aibl_data, aibl_complete, "AIBL",
+                            numeric_vars = c("Age", "Time"),
+                            binary_vars = c("Gender", "APOE4_Carrier"))
+
+  list(
+    summary = rbind(a4_res$summary, habs_res$summary, aibl_res$summary),
+    details = rbind(a4_res$details, habs_res$details, aibl_res$details)
+  )
+}
+
+
+# ==============================================================================
+# 11. VISUALIZATION FUNCTIONS
+# ==============================================================================
+
+# --- 11.1 Cross-cohort forest plot ---
+plot_forest <- function(a4_results, habs_results, aibl_results,
+                        output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Build forest plot data from results
+  forest_data <- data.frame(
+    Cohort = c("A4 Study", "HABS"),
+    Outcome = c("Cognitive Performance (PACC)",
+                "Tau Pathology (Plasma pTau217)"),
+    Beta = c(a4_results$hc3$Beta, habs_results$hc3$Beta),
+    SE = c(a4_results$hc3$SE, habs_results$hc3$SE),
+    P = c(a4_results$hc3$P, habs_results$hc3$P),
+    N = c(a4_results$hc3$N, habs_results$hc3$N),
+    stringsAsFactors = FALSE
+  )
+  forest_data$CI_Lower <- forest_data$Beta - 1.96 * forest_data$SE
+  forest_data$CI_Upper <- forest_data$Beta + 1.96 * forest_data$SE
+  forest_data$Significant <- forest_data$P < 0.05
+  forest_data$Label <- sprintf("%s (N=%d)\n%s",
+                               forest_data$Cohort, forest_data$N,
+                               forest_data$Outcome)
+
+  # Add AIBL APOE4 HR if available
+  if (!is.null(aibl_results$cox)) {
+    apoe_row <- aibl_results$cox[aibl_results$cox$Variable == "APOE4_Carrier", ]
+    if (nrow(apoe_row) > 0) {
+      # Convert HR to log scale for forest plot
+      aibl_entry <- data.frame(
+        Cohort = "AIBL",
+        Outcome = sprintf("AD Conversion (HR=%.2f)", apoe_row$HR),
+        Beta = log(apoe_row$HR),
+        SE = (log(apoe_row$HR_Upper) - log(apoe_row$HR_Lower)) / (2 * 1.96),
+        P = apoe_row$P,
+        N = aibl_results$N,
+        CI_Lower = log(apoe_row$HR_Lower),
+        CI_Upper = log(apoe_row$HR_Upper),
+        Significant = apoe_row$P < 0.05,
+        Label = sprintf("AIBL (N=%d)\nAD Conversion (Cox PH)",
+                        aibl_results$N),
+        stringsAsFactors = FALSE
+      )
+      forest_data <- rbind(forest_data, aibl_entry)
+    }
+  }
+
+  color_sig <- "#0072B2"
+  color_nonsig <- "#999999"
+
+  p <- ggplot(forest_data, aes(x = Beta, y = reorder(Label, Beta))) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "#D55E00",
+               linewidth = 0.8, alpha = 0.7) +
+    geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper,
+                       color = Significant),
+                   height = 0.25, linewidth = 1.2) +
+    geom_point(aes(color = Significant), size = 5, shape = 18) +
+    scale_color_manual(values = c("TRUE" = color_sig,
+                                  "FALSE" = color_nonsig),
+                       guide = "none") +
+    labs(title = "WMH Effects Across Disease Stages",
+         subtitle = "Per 1 SD increase in log-transformed WMH volume",
+         x = "Standardized Beta (95% CI)", y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(face = "bold", size = 14),
+          panel.grid.minor = element_blank())
+
+  ggsave(file.path(output_dir, "forest_plot_cross_cohort.pdf"),
+         p, width = 10, height = 6)
+  return(p)
+}
+
+
+# --- 11.2 Mediation path diagram ---
+plot_mediation_path <- function(mediation_results, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  paths <- mediation_results$paths
+  med <- mediation_results$mediation
+
+  pdf(file.path(output_dir, "mediation_path_diagram.pdf"),
+      width = 10, height = 7)
+  par(mar = c(2, 2, 3, 2))
+  plot.new()
+  plot.window(xlim = c(0, 10), ylim = c(0, 7))
+
+  # Boxes
+  rect(0.5, 2.5, 3.5, 3.5, border = "black", lwd = 2)
+  text(2, 3, "WMH\n(Log, z-scored)", cex = 1.0)
+
+  rect(3.5, 5.0, 6.5, 6.0, border = "black", lwd = 2)
+  text(5, 5.5, "pTau217\n(Log, z-scored)", cex = 1.0)
+
+  rect(6.5, 2.5, 9.5, 3.5, border = "black", lwd = 2)
+  text(8, 3, "MMSE\n(z-scored)", cex = 1.0)
+
+  # Path a: WMH -> pTau217
+  arrows(3.5, 3.3, 3.8, 5.0, lwd = 2, col = "blue")
+  a_beta <- paths$Beta[paths$Path == "a (WMH->pTau217)"]
+  a_p <- paths$P[paths$Path == "a (WMH->pTau217)"]
+  text(3.0, 4.3, sprintf("a = %.3f\np = %.4f", a_beta, a_p),
+       cex = 0.9, col = "blue")
+
+  # Path b: pTau217 -> MMSE
+  arrows(6.5, 5.2, 6.8, 3.5, lwd = 2, col = "blue")
+  b_beta <- paths$Beta[paths$Path == "b (pTau217->MMSE)"]
+  b_p <- paths$P[paths$Path == "b (pTau217->MMSE)"]
+  text(7.5, 4.3, sprintf("b = %.3f\np = %.4f", b_beta, b_p),
+       cex = 0.9, col = "blue")
+
+  # Path c': WMH -> MMSE (direct)
+  arrows(3.5, 2.8, 6.5, 2.8, lwd = 2, col = "red", lty = 2)
+  cp_beta <- paths$Beta[paths$Path == "c' (WMH->MMSE direct)"]
+  cp_p <- paths$P[paths$Path == "c' (WMH->MMSE direct)"]
+  text(5, 2.2, sprintf("c' = %.3f (p = %.4f)", cp_beta, cp_p),
+       cex = 0.9, col = "red")
+
+  # Indirect effect
+  text(5, 1.0, sprintf("Indirect (ACME) = %.4f [%.4f, %.4f], p = %.4f",
+                        med$ACME, med$ACME_CI_Lower, med$ACME_CI_Upper,
+                        med$ACME_P),
+       cex = 0.9, font = 2)
+  text(5, 0.5, sprintf("Proportion Mediated = %.1f%%, N = %d",
+                        med$Prop_Mediated * 100, med$N),
+       cex = 0.9)
+
+  title("HABS: WMH -> pTau217 -> MMSE Mediation (5000 Bootstrap, z-scored)",
+        cex.main = 1.2)
+  dev.off()
+}
+
+
+# --- 11.3 Kaplan-Meier curves ---
+plot_km_curves <- function(aibl_results, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  if (is.null(aibl_results$km_fit)) return(NULL)
+
+  p <- ggsurvplot(
+    aibl_results$km_fit,
+    pval = TRUE,
+    risk.table = TRUE,
+    xlab = "Time (months)",
+    ylab = "AD-Free Survival Probability",
+    title = sprintf("AIBL: AD Conversion by APOE4 Status (N=%d)",
+                    aibl_results$N),
+    palette = c("#0072B2", "#D55E00"),
+    legend.labs = c("APOE4 Non-carrier", "APOE4 Carrier"),
+    ggtheme = theme_minimal(base_size = 12)
+  )
+
+  pdf(file.path(output_dir, "AIBL_KM_curves.pdf"), width = 10, height = 8)
+  print(p)
+  dev.off()
+
+  return(p)
+}
+
+
+# --- 11.4 DCA plot ---
+plot_dca <- function(dca_data, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  if (is.null(dca_data)) return(NULL)
+
+  dca_long <- data.frame(
+    Threshold = rep(dca_data$Threshold, 3),
+    Net_Benefit = c(dca_data$NB_TreatAll, dca_data$NB_Base, dca_data$NB_Full),
+    Model = rep(c("Treat All", "Base Model", "Base + WMH + pTau217"),
+                each = nrow(dca_data)),
+    stringsAsFactors = FALSE
+  )
+
+  p <- ggplot(dca_long, aes(x = Threshold, y = Net_Benefit, color = Model)) +
+    geom_line(linewidth = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    scale_color_manual(values = c("Treat All" = "#999999",
+                                  "Base Model" = "#0072B2",
+                                  "Base + WMH + pTau217" = "#D55E00")) +
+    labs(title = "Decision Curve Analysis: HABS Clinical Utility",
+         x = "Threshold Probability",
+         y = "Net Benefit") +
+    coord_cartesian(xlim = c(0.01, 0.80)) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom")
+
+  ggsave(file.path(output_dir, "DCA_plot.pdf"), p, width = 8, height = 6)
+  return(p)
+}
+
+
+# --- 11.5 Age-stratified comparison plot ---
+plot_age_stratified <- function(age_results, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  if (is.null(age_results$mediation)) return(NULL)
+
+  med_df <- age_results$mediation
+
+  p <- ggplot(med_df, aes(x = Age_Group, y = ACME)) +
+    geom_point(size = 4, color = "#0072B2") +
+    geom_errorbar(aes(ymin = ACME_CI_Lower, ymax = ACME_CI_Upper),
+                  width = 0.2, linewidth = 1, color = "#0072B2") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_text(aes(label = sprintf("N=%d\np=%.4f", N, ACME_P)),
+              vjust = -1.5, size = 3.5) +
+    labs(title = "Age-Stratified Mediation: ACME (Indirect Effect)",
+         subtitle = "WMH -> pTau217 -> MMSE (z-scored, 5000 bootstrap)",
+         x = "Age Group", y = "ACME (95% CI)") +
+    theme_minimal(base_size = 12)
+
+  ggsave(file.path(output_dir, "age_stratified_mediation.pdf"),
+         p, width = 7, height = 6)
+  return(p)
+}
+
+
+# ==============================================================================
+# 12. Q-Q DIAGNOSTIC HELPER
+# ==============================================================================
+
+plot_qq_diagnostic <- function(model, title_prefix, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  fname <- gsub("[^A-Za-z0-9_]", "_", title_prefix)
+  pdf(file.path(output_dir, paste0(fname, "_qq_plot.pdf")),
+      width = 6, height = 6)
+  qqnorm(residuals(model),
+         main = paste0(title_prefix, ": Normal Q-Q Plot"))
+  qqline(residuals(model), col = "red", lwd = 2)
+  dev.off()
+
+  # Shapiro-Wilk test (subsample if N > 5000)
+  resid <- residuals(model)
+  if (length(resid) > 5000) {
+    set.seed(2026)
+    resid <- sample(resid, 5000)
+  }
+  sw <- shapiro.test(resid)
+
+  data.frame(
+    Test = "Shapiro-Wilk",
+    Statistic = sw$statistic,
+    P = sw$p.value,
+    Normal = sw$p.value > 0.05,
+    stringsAsFactors = FALSE
+  )
+}
+
+
+# ==============================================================================
+# 13. MAIN EXECUTION FUNCTION
+# ==============================================================================
+
+run_cross_cohort_validation <- function(
+    # A4 files
+    a4_subjinfo, a4_ptdemog, a4_sppacc, a4_petsuvr, a4_vmri,
+    # HABS files
+    habs_genomics_xlsx, habs_biomarkers_csv, habs_wmh_xlsx, habs_clinical_csv,
+    # AIBL files
+    aibl_ptdemog, aibl_apoeres, aibl_pdxconv,
+    # Options
+    habs_wmh_sheet = "x1",
+    aibl_baseline_year = 2008,
+    output_dir = "figures",
+    n_boot = 5000,
+    save_results = TRUE
+) {
+
+  results <- list()
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # ---- Step 1: Load data ----
+  cat("\n====== Step 1: Loading Data ======\n")
+
+  cat("  Loading A4...\n")
+  a4_data <- load_a4_data(a4_subjinfo, a4_ptdemog, a4_sppacc,
+                          a4_petsuvr, a4_vmri)
+
+  cat("  Loading HABS...\n")
+  habs_data <- load_habs_data(habs_genomics_xlsx, habs_biomarkers_csv,
+                              habs_wmh_xlsx, habs_clinical_csv,
+                              wmh_sheet = habs_wmh_sheet)
+
+  cat("  Loading AIBL...\n")
+  aibl_data <- load_aibl_data(aibl_ptdemog, aibl_apoeres, aibl_pdxconv,
+                              baseline_year = aibl_baseline_year)
+
+  results$data <- list(a4 = a4_data, habs = habs_data, aibl = aibl_data)
+
+  # ---- Step 2: A4 WMH-Cognition ----
+  cat("\n====== Step 2: A4 WMH-Cognition Association ======\n")
+  results$a4_wmh <- run_a4_wmh_cognition(a4_data, output_dir)
+  cat(sprintf("  Beta(HC3) = %.4f, P = %.4e, N = %d\n",
+              results$a4_wmh$hc3$Beta, results$a4_wmh$hc3$P,
+              results$a4_wmh$hc3$N))
+
+  # ---- Step 3: HABS WMH-pTau217 ----
+  cat("\n====== Step 3: HABS WMH-pTau217 Association ======\n")
+  results$habs_wmh_ptau <- run_habs_wmh_ptau217(habs_data, output_dir)
+  cat(sprintf("  Beta(HC3) = %.4f, P = %.4e, N = %d\n",
+              results$habs_wmh_ptau$hc3$Beta, results$habs_wmh_ptau$hc3$P,
+              results$habs_wmh_ptau$hc3$N))
+
+  # ---- Step 4: HABS Mediation ----
+  cat("\n====== Step 4: HABS Mediation (5000 bootstrap, z-scored) ======\n")
+  results$habs_mediation <- run_habs_mediation(habs_data, n_boot = n_boot)
+  cat(sprintf("  ACME = %.4f [%.4f, %.4f], P = %.4f\n",
+              results$habs_mediation$mediation$ACME,
+              results$habs_mediation$mediation$ACME_CI_Lower,
+              results$habs_mediation$mediation$ACME_CI_Upper,
+              results$habs_mediation$mediation$ACME_P))
+  cat(sprintf("  Prop Mediated = %.1f%%\n",
+              results$habs_mediation$mediation$Prop_Mediated * 100))
+
+  # ---- Step 5: HABS SEM ----
+  cat("\n====== Step 5: HABS SEM Confirmation (5000 bootstrap) ======\n")
+  results$habs_sem <- run_habs_sem(habs_data, n_boot = n_boot)
+  indirect <- results$habs_sem$parameters[
+    results$habs_sem$parameters$label == "indirect", ]
+  if (nrow(indirect) > 0) {
+    cat(sprintf("  SEM Indirect = %.4f [%.4f, %.4f], P = %.4f\n",
+                indirect$est, indirect$ci.lower, indirect$ci.upper,
+                indirect$pvalue))
+  }
+
+  # ---- Step 6: HABS Age-Stratified ----
+  cat("\n====== Step 6: HABS Age-Stratified Mediation + SEM ======\n")
+  results$habs_age_stratified <- run_habs_age_stratified(habs_data,
+                                                          n_boot = n_boot)
+  if (!is.null(results$habs_age_stratified$mediation)) {
+    for (i in seq_len(nrow(results$habs_age_stratified$mediation))) {
+      row <- results$habs_age_stratified$mediation[i, ]
+      cat(sprintf("  %s (N=%d): ACME=%.4f, P=%.4f\n",
+                  row$Age_Group, row$N, row$ACME, row$ACME_P))
+    }
+  }
+
+  # ---- Step 7: HABS Age Interaction ----
+  cat("\n====== Step 7: HABS Age Interaction Tests ======\n")
+  results$habs_age_interaction <- run_habs_age_interaction(habs_data)
+  if (!is.null(results$habs_age_interaction)) {
+    print(results$habs_age_interaction)
+  }
+
+  # ---- Step 8: HABS Clinical Utility ----
+  cat("\n====== Step 8: HABS Clinical Utility ======\n")
+  results$habs_clinical <- run_habs_clinical_utility(habs_data)
+  if (!is.null(results$habs_clinical$auc)) {
+    cat(sprintf("  AUC Base: %.3f, AUC Full: %.3f, DeLong P: %.4f\n",
+                results$habs_clinical$auc$AUC[1],
+                results$habs_clinical$auc$AUC[2],
+                results$habs_clinical$delong_p))
+  }
+
+  # ---- Step 9: AIBL Survival ----
+  cat("\n====== Step 9: AIBL Survival Analysis ======\n")
+  results$aibl_survival <- run_aibl_survival(aibl_data)
+  cat(sprintf("  N=%d, Events=%d, Median follow-up=%.1f months\n",
+              results$aibl_survival$N, results$aibl_survival$N_Events,
+              results$aibl_survival$Median_Followup_Months))
+
+  # ---- Step 10: Missing Data Assessment ----
+  cat("\n====== Step 10: Missing Data Assessment ======\n")
+  results$missing_data <- run_missing_data_assessment(a4_data, habs_data,
+                                                      aibl_data)
+  print(results$missing_data$summary)
+
+  # ---- Step 11: Visualizations ----
+  cat("\n====== Step 11: Generating Visualizations ======\n")
+
+  tryCatch({
+    plot_forest(results$a4_wmh, results$habs_wmh_ptau,
+                results$aibl_survival, output_dir)
+    cat("  Forest plot saved\n")
+  }, error = function(e) cat(sprintf("  Forest plot error: %s\n", e$message)))
+
+  tryCatch({
+    plot_mediation_path(results$habs_mediation, output_dir)
+    cat("  Mediation path diagram saved\n")
+  }, error = function(e) cat(sprintf("  Mediation path error: %s\n", e$message)))
+
+  tryCatch({
+    plot_km_curves(results$aibl_survival, output_dir)
+    cat("  KM curves saved\n")
+  }, error = function(e) cat(sprintf("  KM curves error: %s\n", e$message)))
+
+  tryCatch({
+    if (!is.null(results$habs_clinical$dca)) {
+      plot_dca(results$habs_clinical$dca, output_dir)
+      cat("  DCA plot saved\n")
+    }
+  }, error = function(e) cat(sprintf("  DCA plot error: %s\n", e$message)))
+
+  tryCatch({
+    plot_age_stratified(results$habs_age_stratified, output_dir)
+    cat("  Age-stratified plot saved\n")
+  }, error = function(e) cat(sprintf("  Age-stratified error: %s\n", e$message)))
+
+  # ---- Save results ----
+  if (save_results) {
+    saveRDS(results, file.path(output_dir, "cross_cohort_validation_results.rds"))
+    cat(sprintf("\n  Results saved to: %s\n",
+                file.path(output_dir, "cross_cohort_validation_results.rds")))
+  }
+
+  # ---- Session info ----
+  cat("\n====== Session Info ======\n")
+  print(sessionInfo())
+
+  cat("\n====== Cross-Cohort Validation Complete ======\n")
+  return(results)
+}
+
+
+# ==============================================================================
+# EXAMPLE USAGE
+# ==============================================================================
+# Uncomment and modify paths to run:
+#
+# results <- run_cross_cohort_validation(
+#   # A4 files
+#   a4_subjinfo   = "data/A4/SUBJINFO.csv",
+#   a4_ptdemog    = "data/A4/PTDEMOG.csv",
+#   a4_sppacc     = "data/A4/SPPACC.csv",
+#   a4_petsuvr    = "data/A4/PETSUVR.csv",
+#   a4_vmri       = "data/A4/VMRI.csv",
+#   # HABS files
+#   habs_genomics_xlsx  = "data/HABS/Genomics.xlsx",
+#   habs_biomarkers_csv = "data/HABS/Biomarkers.csv",
+#   habs_wmh_xlsx       = "data/HABS/WMH.xlsx",
+#   habs_clinical_csv   = "data/HABS/Clinical.csv",
+#   # AIBL files
+#   aibl_ptdemog  = "data/AIBL/ptdemog.csv",
+#   aibl_apoeres  = "data/AIBL/apoeres.csv",
+#   aibl_pdxconv  = "data/AIBL/pdxconv.csv",
+#   # Options
+#   habs_wmh_sheet     = "x1",
+#   aibl_baseline_year = 2008,
+#   output_dir         = "figures",
+#   n_boot             = 5000,
+#   save_results       = TRUE
+# )
+#
+# # Access individual results:
+# results$a4_wmh$hc3                    # A4 HC3 robust results
+# results$habs_mediation$mediation      # HABS mediation ACME
+# results$habs_sem$parameters           # HABS SEM parameters
+# results$habs_age_stratified$mediation # Age-stratified mediation
+# results$habs_age_stratified$sem       # Age-stratified SEM
+# results$habs_clinical$auc             # Clinical utility AUC
+# results$habs_clinical$nri             # NRI with bootstrap CI
+# results$habs_clinical$idi             # IDI with bootstrap CI
+# results$aibl_survival$cox             # AIBL Cox PH results
+# results$missing_data$summary          # Missing data SMD summary
