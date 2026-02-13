@@ -1,120 +1,90 @@
-# EOAD-LOAD-Genetics
+# Genetic Heterogeneity of Early-Onset versus Late-Onset Alzheimer's Disease: From Polygenic Architecture to Cell-Type-Specific Mechanisms
 
-# Genetic Heterogeneity of Early-Onset vs Late-Onset Alzheimer's Disease
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Overview
+
+This repository contains analysis code for a comprehensive investigation of the genetic heterogeneity between early-onset Alzheimer's disease (EOAD, onset < 65 years) and late-onset Alzheimer's disease (LOAD). The study integrates genome-wide association study (GWAS) summary statistics, spatial transcriptomics, transcriptome-wide association studies, polygenic risk scores, and multi-cohort clinical validation to characterize subtype-specific genetic architectures and their downstream biological consequences.
+
+The central finding is a dissociation between EOAD and LOAD at multiple levels: EOAD exhibits an oligogenic architecture driven by the APOE locus with convergent effects on lipid metabolism and oligodendrocyte/myelination pathways, whereas LOAD displays a highly polygenic architecture dominated by microglial neuroinflammatory mechanisms. Cross-cohort validation in ADNI, A4, HABS, and AIBL confirms age-dependent expression of these genetic effects.
 
 ## Repository Structure
 
 ```
 EOAD-LOAD-Genetics/
 ├── 01_Pathway_Discovery/
-│   └── EOAD_LOAD_Pathway_Discovery.R      # WGCNA, MAGMA, GSEA analysis
+│   └── EOAD_LOAD_Pathway_Discovery.R
 ├── 02_PRS_Construction/
-│   └── PRS_LDpred2_Analysis.R             # Polygenic risk score construction
+│   └── PRS_LDpred2_Analysis.R
 ├── 03_ADNI_Validation/
-│   └── ADNI_Validation.R                  # ADNI cohort validation
+│   └── ADNI_Validation.R
 ├── 04_External_Cohort_Validation/
-│   └── A4_HABS_AIBL_Validation.R          # A4, HABS, AIBL validation
+│   └── A4_HABS_AIBL_Validation.R
 ├── LICENSE
 └── README.md
 ```
 
----
-
-## Analysis Descriptions
+## Analysis Modules
 
 ### 1. Data-Driven Pathway Discovery (`01_Pathway_Discovery/`)
 
-**EOAD_LOAD_Pathway_Discovery.R** - Comprehensive pathway analysis integrating:
+**EOAD_LOAD_Pathway_Discovery.R**
 
-- **WGCNA**: Weighted gene co-expression network analysis on GSE137313 mouse hippocampus RNA-seq (N=48 samples across 4 age groups: 8, 16, 32, 72 weeks)
-- **MAGMA v1.10**: Gene-based association with boundaries extended 35kb upstream/10kb downstream, Bonferroni correction (P < 0.05/19,000 genes)
-- **GSEA**: Gene set enrichment using clusterProfiler (GO-BP, KEGG pathways, FDR < 0.05)
-- **Cell Type Analysis**: MAGMA gene-property with curated marker sets (T-cell: 64 genes, Microglia: 58 genes, Oligodendrocyte: 62 genes)
-- **Graham et al. Module Enrichment**: Validation using published human microglial (26 genes), human oligodendrocyte (29 genes), mouse ARM (17 genes), mouse phagolysosomal (45 genes), and mouse longevity (38 genes) signatures
-- **Conditional Analysis**: Testing T-cell independence controlling for microglial expression (Z_MAGMA = β₀ + β₁×T_Cell + β₂×Microglia + ε)
+Gene-based and pathway-level dissection of EOAD versus LOAD genetic architecture:
 
-### 2. Polygenic Risk Score Construction (`02_PRS_Construction/`)
+- **MAGMA gene-based association** (v1.10): gene boundaries extended 35 kb upstream / 10 kb downstream, 1000 Genomes Phase 3 EUR LD reference, Bonferroni threshold P < 0.05/19,000 protein-coding genes
+- **Graham et al. glial module enrichment**: one-sided Fisher's exact tests mapping GWAS-significant genes onto five curated microglial and oligodendrocyte transcriptional programs (Human Microglial AD-Significant, Human Oligodendrocyte AD-Significant, Mouse ARM, Mouse Phagolysosomal, Mouse Longevity)
+- **GSEA** via clusterProfiler: genes ranked by MAGMA Z-statistics, GO-BP pathways, FDR < 0.05
+- **MAGMA gene-property analysis**: nine curated cell-type marker gene sets (T-cell, microglia, oligodendrocyte, Aβ clearance, APP metabolism, myelination, astrocyte, neuron, endothelial)
+- **Conditional regression**: testing T-cell signal independence after controlling for microglial gene expression
+- **LOAD downsampling validation**: 50 independent iterations matching LOAD effective sample size to EOAD (N ≈ 1,573), re-executing MAGMA gene-based and gene-set analyses to distinguish power-dependent from architecture-dependent pathway enrichment
 
-**PRS_LDpred2_Analysis.R** - Bayesian PRS construction:
+### 2. Polygenic Risk Score Construction and Transcriptome-Wide Association (`02_PRS_Construction/`)
 
-- **LDpred2-auto**: 30 Markov chains, 500 burn-in, 500 iterations, sparse=TRUE, shrink_corr=0.95
-- **Chain Bagging**: Aggregating posterior estimates across converged chains
-- **APOE Exclusion**: Extended APOE region (chr19: 44-46 Mb) masked
-- **Pathway-specific PRS** (SNPs within 100kb of pathway genes):
-  - T-cell activation (56 genes)
-  - Activated microglia (58 genes)
-  - Amyloid-beta clearance (52 genes)
-  - APP metabolism (38 genes)
-  - Oligodendrocyte function (62 genes)
-  - Myelination (52 genes)
+**PRS_LDpred2_Analysis.R**
+
+Bayesian PRS construction, pathway-specific partitioning, and S-PrediXcan TWAS:
+
+- **S-PrediXcan TWAS**: GTEx v8 prediction models across five brain regions (Cortex, Anterior Cingulate Cortex BA24, Frontal Cortex BA9, Hippocampus, Putamen basal ganglia); genetically predicted expression of 49 MAGMA-identified oligodendrocyte-myelin pathway genes; two-sided Wilcoxon rank-sum tests comparing median predicted Z-scores between oligodendrocyte and background genes, one-sided tests confirming directional effects, Levene's test assessing expression variability; LOAD and multivariate aging GWAS as controls to verify EOAD specificity
+- **LDpred2-auto**: 30 MCMC chains, jointly estimating SNP heritability (h²) and polygenicity (p); chain bagging aggregating posterior effect estimates across converged chains; EOAD, LOAD, and multivariate aging summary statistics harmonised to GRCh37 coordinates and matched to HapMap3+ European LD reference panel
+- **Pathway-specific PRS**: six gene sets (T-cell activation, activated microglia, Aβ clearance, APP metabolism, oligodendrocyte, myelination); SNPs within 100 kb of pathway gene boundaries retained with LDpred2 weights, all remaining SNPs masked to zero
+- **Cellular origin burden**: percentage of total genetic risk attributable to each pathway
+- **APOE sensitivity**: APOE-excluded PRS generated by masking variants within Chr19:44,000,000–46,000,000 bp (GRCh37); APOE contribution calculated as percentage reduction in pathway burden after masking
 
 ### 3. ADNI Validation (`03_ADNI_Validation/`)
 
-**ADNI_Validation.R** - Primary validation cohort analysis:
+**ADNI_Validation.R**
 
-- **Neuroimaging**: FreeSurfer UCSFFSX51 pipeline
-  - Total WMH volume (ST128SV), ICV-normalized
-  - Bilateral hippocampus (ST29SV + ST88SV)
-  - Bilateral entorhinal cortex (ST24CV + ST83CV)
-  - Bilateral parahippocampal cortex (ST44CV + ST103CV)
-  - Bilateral lateral ventricle (ST37SV + ST96SV)
-  - Hippocampal subfields (CA1: ST131HS + ST139HS, Subiculum: ST137HS + ST145HS)
-  - Subcortical structures: Amygdala (ST12SV/ST71SV), Caudate (ST16SV/ST75SV), Putamen (ST53SV/ST112SV), Pallidum (ST42SV/ST101SV), Thalamus (ST61SV/ST120SV), Accumbens (ST11SV/ST70SV)
-- **CSF Biomarkers**: AlzBio3 platform, restricted to ADNI phases 1/GO/2
-  - Aβ42, total tau, phosphorylated tau
-  - Amyloid positivity threshold: Aβ42 < 192 pg/mL
-  - Derived ratios: TAU/ABETA, PTAU/ABETA
-- **Cox Regression**: MCI-to-dementia conversion using `coxph(Surv(Time_Months, Event) ~ PRS + covariates)`
-- **K-means Clustering**: Genetic subtype identification (k=3, silhouette validation, nstart=50)
-  - Biological labels: Oligo-Driven, Immune-Driven, Abeta-Driven
-- **Linear Mixed Models**: Longitudinal cognitive trajectory (MMSE, CDRSB, ADAS11, ADAS13)
-  - Formula: `Cognition ~ Time_Years * PRS + Age + Sex + APOE4 + (1 + Time_Years | RID)`
-  - Optimizer: bobyqa
-- **Age Stratification**: <70 vs ≥70 years with interaction testing (PRS × Age_Centered)
-- **Covariates**: Age, sex, APOE ε4 count, education (PTEDUCAT)
-- **ggseg Brain Visualization**: Cortical surface mapping using Desikan-Killiany atlas (optional)
-- **Mechanistic Validation (Part 13)**:
-  - **WMH-PRS Association**: Validating oligodendrocyte hypothesis (log-transformed WMH ~ PRS_Oligo)
-  - **Hippocampal Subfield Specificity**: CA1, CA2/3, CA4, DG, Presubiculum, Subiculum, Fimbria, HATA
-  - **Subcortical Structure Analysis**: Age-stratified effects across 7 structures
-  - **Subtype-Specific WMH**: ANOVA comparing WMH burden across genetic subtypes
-  - **Combined Figure 7**: Multi-panel visualization using patchwork (6 panels: A-F)
+Primary validation cohort analysis (N = 812):
+
+- **Pathway-specific PRS**: six PRS computed by applying LDpred2 posterior weights to imputed genotypes, standardized to z-scores
+- **Neuroimaging phenotypes**: FreeSurfer pipeline — total WMH volume, bilateral hippocampal volume, bilateral entorhinal cortical volume, all normalized to intracranial volume; 68 cortical and subcortical regions (Desikan–Killiany atlas)
+- **CSF biomarkers**: AlzBio3 immunoassay platform (Aβ42, total tau, phosphorylated tau); sTREM2 for microglial activation assessment
+- **Linear regression**: PRS associations with neuroimaging and CSF biomarkers, adjusting for age, sex, APOE ε4 allele count, and education
+- **Age stratification**: younger (<70 years) versus older (≥70 years) subgroups; age × PRS interaction terms to evaluate age-dependent effects
+- **MCI-to-dementia conversion**: logistic regression (N = 482 MCI, 190 conversions, median follow-up 4.0 years); age-dependent reversal of oligodendrocyte pathway genetic risk (age × PRS interaction OR = 0.54, P = 0.005)
+- **Sliding-window analysis**: overlapping 10-year windows with 2-year increments across ages 55–85; Benjamini–Hochberg FDR correction across windows
+- **Unsupervised k-means clustering**: three genetic subtypes (Background_Risk, Oligo_Driven, High_Aβ) from six pathway-specific PRS; hierarchical clustering achieving 78% concordance
+- **Regional brain atrophy**: subtype-specific patterns across 68 cortical and subcortical regions, ggseg visualization
 
 ### 4. External Cohort Validation (`04_External_Cohort_Validation/`)
 
-**A4_HABS_AIBL_Validation.R** - Multi-cohort validation:
+**A4_HABS_AIBL_Validation.R**
 
-- **A4 Study**: Multi-group SEM using lavaan
-  - Model: APOE4 → Centiloid → PACC
-  - Estimator: MLR (maximum likelihood with robust standard errors)
-  - Missing data: FIML (full information maximum likelihood)
-  - Age groups: <70 vs ≥70 years
-  - Fit indices: CFI, TLI, RMSEA, SRMR
-  - Bootstrap CI: 1000 iterations for indirect effects
-- **HABS**: Clinical utility assessment
-  - Outcome: Cognitive impairment (CDR ≥ 0.5 OR MMSE < 24)
-  - Firth-corrected logistic regression
-  - AUC with DeLong 95% CI
-  - AUPRC (area under precision-recall curve)
-  - NRI with 3 threshold sets: high (0.20, 0.40, 0.60), standard (0.10, 0.20), fine (0.15, 0.25, 0.35, 0.50)
-  - IDI with bootstrap (1000 iterations)
-  - DCA (decision curve analysis, threshold 0.01-0.80)
-  - Train/test split: 70/30 with fixed seed
-- **AIBL**: Survival analysis
-  - Cox proportional hazards regression
-  - AFT models with Weibull distribution
-  - Time ratio estimates for APOE ε4 effects
+Cross-cohort mechanistic validation spanning preclinical to clinical AD. Only ADNI provided genome-wide genotyping for PRS computation; A4, HABS, and AIBL lacked genotyping data and therefore employed WMH as a phenotypic proxy for oligodendrocyte dysfunction.
 
----
+- **HABS** (N = 1,490): phenotype-driven mediation analysis testing whether WMH exerts an indirect effect on cognition through p-tau217 (average causal mediation effect estimated via 5,000 bootstrap iterations, confirmed by structural equation modelling); age-stratified SEM (<75 versus ≥75 years); formal Age × p-tau217 interaction term on cognition
+- **A4 Study** (N = 1,260): linear regression with heteroscedasticity-consistent standard errors (HC3) assessing WMH–cognition association (Preclinical Alzheimer Cognitive Composite), adjusting for age, sex, APOE ε4, education, and Centiloid amyloid burden
+- **AIBL** (N = 408): Cox proportional hazards regression for conversion to dementia with APOE ε4 as primary predictor; clinical utility of WMH for predicting cognitive impairment evaluated using Firth-corrected logistic regression, AUC, net reclassification improvement, and decision curve analysis
+- **Participant flow assessment**: quantification of potential selection bias for each cohort
+- **Cross-cohort forest plot visualization**: standardized effect sizes with 95% CI
 
 ## Requirements
 
 ### R Version
-
 - R >= 4.2.0
 
 ### R Packages
-
 ```r
 # CRAN packages
 install.packages(c(
@@ -122,34 +92,30 @@ install.packages(c(
   "survival", "survminer", "lme4", "lmerTest",
   "cluster", "factoextra", "pheatmap", "corrplot",
   "pROC", "lavaan", "logistf", "PRROC",
-  "viridis", "RColorBrewer", "patchwork"
+  "sandwich", "lmtest", "mediation", "meta",
+  "ggseg", "flexsurv", "dcurves", "patchwork",
+  "viridis", "RColorBrewer"
 ))
 
 # Bioconductor packages
 if (!requireNamespace("BiocManager", quietly = TRUE))
-  install.packages("BiocManager")
+    install.packages("BiocManager")
 BiocManager::install(c(
-  "bigsnpr", "WGCNA", "clusterProfiler", 
-  "org.Hs.eg.db", "org.Mm.eg.db", "biomaRt",
-  "TxDb.Hsapiens.UCSC.hg19.knownGene"
+  "bigsnpr", "clusterProfiler", "org.Hs.eg.db",
+  "org.Mm.eg.db", "biomaRt",
+  "TxDb.Hsapiens.UCSC.hg19.knownGene",
+  "GenomicRanges"
 ))
-
-# Optional: ggseg for brain visualization
-install.packages("ggseg")
 ```
-
----
 
 ## Data Availability
 
 ### GWAS Summary Statistics
-
 | Dataset | Source | Sample Size | Population | PubMed ID | Access |
 |---------|--------|-------------|------------|-----------|--------|
-| **EOAD** | FinnGen R11 | Cases: 1,573<br>Controls: 199,505 | European (Finnish) | 36653562 | [Download](https://storage.googleapis.com/finngen-public-data-r11/summary_stats/finngen_R11_AD_EO_EXMORE.gz) |
-| **LOAD** | EADB Consortium | Cases: 85,934<br>Controls: 401,577 | European (Multi-country) | 35379992 | [EBI GWAS](https://www.ebi.ac.uk/gwas/) (GCST90027158) |
-| **Aging** | Timmers et al. | Healthspan: 300,477<br>Lifespan: 1,012,240<br>Longevity: 36,745 | European | 32678081<br>31413261 | [Edinburgh DataShare](https://datashare.ed.ac.uk/) |
-| **TPMI** | Taiwan PMI | Cases: 2,828<br>Controls: 320,866 | East Asian (Han Chinese) | 41094136 | [TPMI PheWeb](https://pheweb.ibms.sinica.edu.tw/) |
+| **EOAD** | FinnGen R11 | Cases: 1,573; Controls: 199,505 | European (Finnish) | 36653562 | [Download](https://storage.googleapis.com/finngen-public-data-r11/summary_stats/finngen_R11_AD_EO_EXMORE.gz) |
+| **LOAD** | EADB Consortium | Cases: 85,934; Controls: 401,577 | European (Multi-country) | 35379992 | [EBI GWAS](https://www.ebi.ac.uk/gwas/) (GCST90027158) |
+| **Aging** | Timmers et al. | Healthspan: 300,477; Lifespan: 1,012,240; Longevity: 36,745 | European | 32678081, 31413261 | [Edinburgh DataShare](https://datashare.ed.ac.uk/) |
 
 #### Dataset Details
 
@@ -164,76 +130,88 @@ install.packages("ggseg")
 - Diagnosis: NINCDS-ADRDA or DSM criteria
 - Cohorts: 42 cohorts across Europe and North America
 - SNPs: 21,101,114 SNPs post-QC
-- Platforms: Affymetrix and Illumina arrays
 
 **Multivariate Aging**
-- Healthspan: Years free from major age-related diseases (28.3% unhealthy)
-- Parental lifespan: Age at death or current age (60% deceased)
+- Healthspan: Years free from major age-related diseases
+- Parental lifespan: Age at death or current age
 - Longevity: Survival to 90th percentile vs 60th percentile
 
-**Trans-Ancestry AD (Han Chinese)**
-- PheCode: 290.11
-- Source: Taiwan Biobank electronic medical records
-- Genotyping: Axiom Genome-Wide TWB 2.0 Array
-- Imputation: 1000 Genomes EAS reference panel
-
 ### White Matter Microstructure (UK Biobank BIG40)
+| Tract | UKB Field | Sample Size | Description |
+|-------|-----------|-------------|-------------|
+| **Corpus Callosum Body** | 25059 | 33,224 | Primary inter-hemispheric motor/premotor tract |
+| **Cingulum Hippocampus (R)** | 25092 | 33,224 | Limbic tract connecting cingulate-entorhinal-hippocampus |
+| **Uncinate Fasciculus (R)** | 25100 | 33,224 | Temporal-orbitofrontal connection for semantic memory |
+| **Fornix** | 25061 | 33,224 | Primary hippocampal efferent pathway (Papez circuit) |
 
-| Tract | UKB Field | Sample Size | PubMed ID | Description |
-|-------|-----------|-------------|-----------|-------------|
-| **Corpus Callosum Body** | 25059 | 33,224 | 30305740 | Primary inter-hemispheric motor/premotor tract |
-| **Cingulum Hippocampus (R)** | 25092 | 33,224 | 30305740 | Limbic tract connecting cingulate-entorhinal-hippocampus |
-| **Uncinate Fasciculus (R)** | 25100 | 33,224 | 30305740 | Temporal-orbitofrontal connection for semantic memory |
-| **Fornix** | 25061 | 33,224 | 30305740 | Primary hippocampal efferent pathway (Papez circuit) |
-
-- Phenotype: Mean fractional anisotropy (FA) on TBSS skeleton
-- Method: Diffusion MRI (dMRI) with tract-based spatial statistics
+- Phenotype: Mean fractional anisotropy (FA) derived from dMRI processed using tract-based spatial statistics (TBSS)
+- PubMed ID: 30305740
 - Access: [UK Biobank BIG40](https://open.win.ox.ac.uk/ukbiobank/big40/)
 
+### Human Spatial Transcriptomic Datasets
+| Dataset | Region | Source | Spatial Units | Clusters | Access |
+|---------|--------|--------|---------------|----------|--------|
+| **LIBD Spatial Atlas** | Anterior Hippocampus | Lieber Institute for Brain Development | 4,992 | 9 unsupervised transcriptomic clusters | [GEO GSE264692](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE264692) |
+| **Maynard et al.** | Dorsolateral Prefrontal Cortex (DLPFC) | Sample 151673 | 3,639 | 8 layer-resolved clusters | [spatialLIBD](http://spatial.libd.org/spatialLIBD/) |
 
+- Platform: 10X Visium spatial transcriptomics
+
+### Mouse Spatial Transcriptomic Datasets (Cross-Species Validation)
+| Dataset | Description | Source |
+|---------|-------------|--------|
+| **MOSTA Adult Mouse Brain** | Hippocampal subfields, cortical layers, white matter tracts | [MOSTA](https://db.cngb.org/stomics/mosta/) |
+| **MOSTA Embryonic Mouse Brain (E16.5)** | Developmental control | [MOSTA](https://db.cngb.org/stomics/mosta/) |
 
 ### Validation Cohorts
+| Cohort | N | Description | Access |
+|--------|---|-------------|--------|
+| **ADNI** | 812 | Genome-wide genotyping, structural MRI, CSF biomarkers, longitudinal follow-up | [adni.loni.usc.edu](https://adni.loni.usc.edu/) |
+| **A4 Study** | 1,260 | Cognitively normal adults with elevated amyloid; Centiloid scale | [ida.loni.usc.edu](https://ida.loni.usc.edu/) |
+| **HABS** | 1,490 | Multimodal imaging, plasma p-tau217 (ALZpath Simoa v2), WMH | [habs.mgh.harvard.edu](https://habs.mgh.harvard.edu/) |
+| **AIBL** | 408 | Non-North American replication, longitudinal conversion | [aibl.csiro.au](https://aibl.csiro.au/) |
 
-| Cohort | Description | Access |
-|--------|-------------|--------|
-| **ADNI** | Alzheimer's Disease Neuroimaging Initiative<br>Genome-wide genotyping, neuroimaging, CSF, longitudinal | [adni.loni.usc.edu](https://adni.loni.usc.edu/) |
-| **A4 Study** | Anti-Amyloid Treatment in Asymptomatic AD<br>Cognitively normal, elevated amyloid, Centiloid scale | [ida.loni.usc.edu](https://ida.loni.usc.edu/) |
-| **HABS** | Harvard Aging Brain Study<br>Multimodal imaging, plasma pTau217 (ALZpath Simoa v2), WMH | [habs.mgh.harvard.edu](https://habs.mgh.harvard.edu/) |
-| **AIBL** | Australian Imaging, Biomarker and Lifestyle<br>Non-North American replication, longitudinal conversion | [aibl.csiro.au](https://aibl.csiro.au/) |
-
----
+### LD Reference Panel
+- HapMap3+ EUR variants from the UK Biobank (Privé et al. 2022)
+- 1000 Genomes Phase 3 European panel (~1.2 million HapMap Phase 3 SNPs for LDSC)
+- Available via the bigsnpr R package
 
 ## External Tools
 
 Computational workflows employed publicly available implementations:
 
-| Tool | Version | Purpose | URL |
-|------|---------|---------|-----|
-| **LDSC** | 1.0.1 | Genetic correlation, heritability | [GitHub](https://github.com/bulik/ldsc) |
-| **LAVA** | 0.1.0 | Local genetic correlation (~1Mb segments) | [GitHub](https://github.com/josefin-werme/LAVA) |
-| **conjFDR** | - | Conditional/conjunctional FDR for pleiotropic variants | [GitHub](https://github.com/precimed/pleiofdr) |
-| **FUMA** | v1.5.4 | Functional mapping and annotation | [Web](https://fuma.ctglab.nl/) |
-| **gsMap** | - | Spatial transcriptomic mapping (Cauchy combination test) | [GitHub](https://github.com/JianYang-Lab/gsMap) |
-| **HESS** | 0.5.4 | Local SNP heritability (1,703 LD-independent regions) | [GitHub](https://github.com/huwenboshi/hess) |
-| **Genomic SEM** | 0.0.5 | Structural equation modeling of genetic covariance | [GitHub](https://github.com/GenomicSEM/GenomicSEM) |
-| **g:Profiler** | - | GO/KEGG pathway enrichment | [Web](https://biit.cs.ut.ee/gprofiler/gost) |
+| Tool | Version/URL | Purpose |
+|------|-------------|---------|
+| **LDSC** | [GitHub](https://github.com/bulik/ldsc) | Cross-trait genetic correlation and SNP heritability |
+| **HESS** | [GitHub](https://github.com/huwenboshi/hess) | Local SNP heritability partitioning across 1,703 LD-independent regions |
+| **MAGMA** | v1.10, [Website](https://ctg.cncr.nl/software/magma) | Gene-based association and gene-property analysis |
+| **LAVA** | [GitHub](https://github.com/josefin-werme/LAVA) | Local genetic correlation across ~2,495 independent loci |
+| **conjFDR** | [GitHub](https://github.com/precimed/pleiofdr) | Conditional/conjunctional FDR for pleiotropic variant discovery |
+| **FUMA** | v1.5.4, [Web](https://fuma.ctglab.nl/) | Functional mapping and annotation (CADD, RegulomeDB, chromatin states) |
+| **gsMap** | [GitHub](https://github.com/JianYang-Lab/gsMap) | Spatial transcriptomic enrichment mapping (Cauchy combination test) |
+| **S-PrediXcan** | [GitHub](https://github.com/hakyimlab/MetaXcan) | Transcriptome-wide association with GTEx v8 prediction models |
+| **LDpred2** | via bigsnpr R package | Bayesian PRS construction (LDpred2-auto) |
+| **g:Profiler** | [Web](https://biit.cs.ut.ee/gprofiler/gost) | GO/KEGG pathway enrichment of pleiotropic gene sets |
 
----
+## Reproducibility Notes
+
+1. All scripts assume GWAS summary statistics have been downloaded and formatted with columns: `chr`, `pos`, `a0`, `a1`, `beta`, `beta_se`, `p`, `n_eff`.
+2. ADNI, A4, HABS, and AIBL data require approved data use agreements from their respective consortia.
+3. File paths in the scripts use placeholder variables (e.g., `base_dir`, `data_dir`) that should be modified to match your local directory structure.
+4. LDpred2 chromosome-wise SFBM computation is memory-intensive; 32 GB RAM recommended.
+5. MAGMA gene-based analysis requires pre-computed annotation files (`.genes.annot`) generated from the 1000 Genomes Phase 3 EUR reference panel.
+6. S-PrediXcan requires GTEx v8 prediction model databases (`.db` files) and covariance files for each brain tissue.
+7. gsMap requires spatial transcriptomic data in standard 10X Visium format; human gene symbols are converted to mouse orthologs via Ensembl BioMart for cross-species analyses.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
----
+## Contact
+
+For questions regarding the code, please open an issue or contact the corresponding author.
 
 ## Acknowledgments
 
-Data collection and sharing for this project was funded by:
+Data collection and sharing for ADNI was funded by the Alzheimer's Disease Neuroimaging Initiative (National Institutes of Health Grant U01 AG024904) and DOD ADNI (Department of Defense award number W81XWH-12-2-0012). The A4 Study is a secondary prevention trial in preclinical Alzheimer's disease funded by Eli Lilly and Company, the Alzheimer's Association, and the National Institute on Aging. HABS is funded by the National Institute on Aging (P01 AG036694). AIBL is funded by the CSIRO, the Science and Industry Endowment Fund, and the National Health and Medical Research Council of Australia.
 
-- Alzheimer's Disease Neuroimaging Initiative (ADNI) (National Institutes of Health Grant U01 AG024904 and DOD ADNI W81XWH-12-2-0012)
-- FinnGen Consortium
-- European Alzheimer & Dementia Biobank (EADB) Consortium
-- UK Biobank
-- Taiwan Precision Medicine Initiative
-
-We thank all participants and their families for their contributions to research.
+We thank the FinnGen Consortium, the European Alzheimer & Dementia Biobank (EADB) Consortium, and the UK Biobank for providing access to GWAS summary statistics. We thank all participants and their families for their contributions to research.
