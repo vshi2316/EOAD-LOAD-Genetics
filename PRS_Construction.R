@@ -1,122 +1,138 @@
 # ==============================================================================
-# EOAD vs LOAD Polygenic Risk Score Construction using LDpred2
+# EOAD vs LOAD: Polygenic Risk Score Construction using LDpred2-auto
 # ==============================================================================
 #
-# Analysis Contents:
-#   Part 1: Environment Setup
-#   Part 2: Load and Format GWAS Summary Statistics
-#   Part 3: LD Reference Panel and SNP Matching
-#   Part 4: LDpred2-auto with Chain Bagging
-#   Part 5: APOE-Excluded PRS Weights
-#   Part 6: Pathway Gene Set Definitions
-#   Part 7: Pathway-Specific PRS Weight Generation
-#   Part 8: Export PRS Weights
-#   Part 9: Visualization
-#   Part 10: Results Summary
-#   Part 11: APOE Sensitivity Analysis (SNP Heritability Re-estimation)
+# Purpose: Construct genome-wide and pathway-specific PRS for EOAD, LOAD, and
+#          multivariate aging using LDpred2-auto with chain bagging, then
+#          evaluate APOE locus contribution via sensitivity analysis.
+#
+# Analyses:
+#   1.  Format GWAS summary statistics for LDpred2 (GRCh37, binary/continuous)
+#   2.  Load LD reference panel (HapMap3+ EUR, chromosome-wise sparse matrices)
+#   3.  SNP matching with LD reference via snp_match()
+#   4.  LDpred2-auto with chain bagging (30 chains, chromosome-wise SFBM)
+#   5.  APOE-excluded PRS weights (Chr19:44-46Mb hard mask)
+#   6.  Pathway gene set definitions (6 curated sets: T-cell, microglia,
+#       Abeta clearance, APP metabolism, oligodendrocyte, myelination)
+#   7.  Pathway-specific PRS weight generation (100kb window, GenomicRanges)
+#   8.  Export PRS weights (full, noAPOE, pathway-specific)
+#   9.  Visualization (genetic architecture scatter, cellular origin bar,
+#       APOE sensitivity faceted bar)
+#   10. Results summary tables
+#   11. APOE sensitivity (re-run LDpred2-auto excluding APOE SNPs from both
+#       GWAS data and LD matrix, compare h2)
+#
+# Statistical notes:
+#   - LDpred2-auto: 30 MCMC chains, 500 burn-in + 500 sampling iterations
+#   - Chain bagging: average posterior betas across converged chains
+#   - Convergence filter: h2 in (1e-6, 1.0) and p > 1e-6
+#   - N_eff for binary traits: 4 / (1/N_cases + 1/N_controls)
+#   - Pathway SNPs: within 100kb of gene boundaries (TxDb hg19)
+#   - Cellular origin burden: sum(|pathway weights|) / sum(|genome weights|)
+#   - APOE region: Chr19:44,000,000-46,000,000 (GRCh37)
+#   - Sparse mode enabled, shrink_corr = 0.95
+#   - 95% CI approximation: h2 * 0.92 to h2 * 1.08
+#
+# Dependencies: data.table, dplyr, ggplot2, cowplot, Matrix, scales,
+#   gridExtra, tidyr, bigsnpr, bigsparser, org.Hs.eg.db,
+#   GenomicRanges, TxDb.Hsapiens.UCSC.hg19.knownGene, AnnotationDbi
 # ==============================================================================
 
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(ggplot2)
+  library(cowplot)
+  library(Matrix)
+  library(scales)
+  library(gridExtra)
+  library(tidyr)
+  library(bigsnpr)
+  library(bigsparser)
+  library(org.Hs.eg.db)
+  library(GenomicRanges)
+  library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+  library(AnnotationDbi)
+})
+
+theme_publication <- theme_minimal() +
+  theme(
+    plot.title    = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+    axis.title    = element_text(size = 12),
+    axis.text     = element_text(size = 10),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+
 # ==============================================================================
-# Part 1: Environment Setup
+# 1. FORMAT GWAS SUMMARY STATISTICS
 # ==============================================================================
 
-packages_cran <- c("data.table", "dplyr", "ggplot2", "cowplot", "Matrix",
-                   "RColorBrewer", "scales", "gridExtra", "tidyr")
-packages_bioc <- c("bigsnpr", "bigsparser", "org.Hs.eg.db", "GenomicRanges",
-                   "TxDb.Hsapiens.UCSC.hg19.knownGene", "AnnotationDbi")
+# Standardizes GWAS data for LDpred2 input.
+# For binary traits, computes N_eff = 4 / (1/n_case + 1/n_control).
+# Filters to autosomes, single-nucleotide variants, removes duplicates and NAs.
+format_gwas_ldpred2 <- function(gwas_file, n_case = NULL, n_control = NULL,
+                                n_total = NULL, trait_type = "binary",
+                                chr_col = "CHR", pos_col = "BP",
+                                a1_col = "A1", a2_col = "A2",
+                                beta_col = "BETA", se_col = "SE",
+                                snp_col = "SNP") {
 
-for (pkg in packages_cran) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
-  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-}
+  gwas_raw <- fread(gwas_file)
+  cat("  Input SNPs:", nrow(gwas_raw), "\n")
 
-for (pkg in packages_bioc) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-    BiocManager::install(pkg)
-  }
-  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-}
-
-dir.create("results/", showWarnings = FALSE)
-dir.create("results/weights/", showWarnings = FALSE)
-dir.create("results/figures/", showWarnings = FALSE)
-dir.create("results/tables/", showWarnings = FALSE)
-
-cat("Environment setup complete.\n")
-
-# ==============================================================================
-# Part 2: Load and Format GWAS Summary Statistics
-# ==============================================================================
-
-## Section 2.1: Load GWAS Data (GRCh37/hg19)
-eoad_gwas <- fread("EOAD_QC_hg19.txt")
-load_gwas <- fread("LOAD_QC_hg19.txt")
-aging_gwas <- fread("Healthspan_Lifespan_Longevity_MTAG.txt")
-
-eoad_gwas <- eoad_gwas[!is.na(BP), ]
-load_gwas <- load_gwas[!is.na(BP), ]
-aging_gwas <- aging_gwas[!is.na(BP), ]
-
-cat("GWAS data loaded:\n")
-cat("  EOAD:", nrow(eoad_gwas), "SNPs\n")
-cat("  LOAD:", nrow(load_gwas), "SNPs\n")
-cat("  Aging:", nrow(aging_gwas), "SNPs\n")
-
-## Section 2.2: Format GWAS for LDpred2
-format_gwas_ldpred2 <- function(gwas, n_case = NULL, n_control = NULL,
-                                 n_total = NULL, trait_type = "binary") {
   if (trait_type == "binary") {
-    n_eff <- 4 / (1/n_case + 1/n_control)
+    n_eff <- 4 / (1 / n_case + 1 / n_control)
   } else {
     n_eff <- n_total
   }
-  
+  cat("  N_eff:", round(n_eff), "\n")
+
   gwas_std <- data.frame(
-    chr = as.integer(gwas$CHR),
-    pos = as.integer(gwas$BP),
-    a0 = toupper(gwas$other_allele),
-    a1 = toupper(gwas$effect_allele),
-    beta = as.numeric(gwas$beta),
-    beta_se = as.numeric(gwas$se),
-    rsid = gwas$SNP,
-    n_eff = n_eff,
+    chr    = as.integer(gwas_raw[[chr_col]]),
+    pos    = as.integer(gwas_raw[[pos_col]]),
+    a0     = toupper(as.character(gwas_raw[[a2_col]])),
+    a1     = toupper(as.character(gwas_raw[[a1_col]])),
+    beta   = as.numeric(gwas_raw[[beta_col]]),
+    beta_se = as.numeric(gwas_raw[[se_col]]),
+    rsid   = as.character(gwas_raw[[snp_col]]),
+    n_eff  = n_eff,
     stringsAsFactors = FALSE
   )
-  
-  gwas_std <- gwas_std[complete.cases(gwas_std), ]
+
+  gwas_std <- gwas_std[complete.cases(gwas_std[, c("chr","pos","a0","a1","beta","beta_se")]), ]
   gwas_std <- gwas_std[gwas_std$chr %in% 1:22, ]
   gwas_std <- gwas_std[nchar(gwas_std$a0) == 1 & nchar(gwas_std$a1) == 1, ]
   gwas_std <- gwas_std[!duplicated(paste(gwas_std$chr, gwas_std$pos)), ]
-  
+
+  cat("  After QC:", nrow(gwas_std), "SNPs\n")
   return(gwas_std)
 }
 
-## Section 2.3: Apply Formatting
-gwas_eoad <- format_gwas_ldpred2(eoad_gwas, n_case = 1573, n_control = 199505,
-                                  trait_type = "binary")
-gwas_load <- format_gwas_ldpred2(load_gwas, n_case = 85934, n_control = 401577,
-                                  trait_type = "binary")
-gwas_aging <- format_gwas_ldpred2(aging_gwas, n_total = 752566,
-                                   trait_type = "continuous")
-
-cat("\nGWAS formatted:\n")
-cat("  EOAD:", nrow(gwas_eoad), "SNPs\n")
-cat("  LOAD:", nrow(gwas_load), "SNPs\n")
-cat("  Aging:", nrow(gwas_aging), "SNPs\n")
 
 # ==============================================================================
-# Part 3: LD Reference Panel and SNP Matching
+# 2. LOAD LD REFERENCE
 # ==============================================================================
 
-## Section 3.1: Load LD Reference (List Format for Memory Efficiency)
-map_ldref <- readRDS("map.rds")
+# Loads chromosome-wise LD matrices and map file from HapMap3+ EUR reference.
+# Returns list(map, corr) where corr is a length-22 list of dgCMatrix objects.
+load_ld_reference <- function(ldref_dir, map_file = "map.rds",
+                              ld_pattern = "LD_with_blocks_chr%d.rds") {
 
-corr <- list()
-for (chr in 1:22) {
-  chr_file <- paste0("LD_with_blocks_chr", chr, ".rds")
-  if (file.exists(chr_file)) {
+  map_ldref <- readRDS(file.path(ldref_dir, map_file))
+  cat("  LD reference map:", nrow(map_ldref), "SNPs\n")
+
+  corr <- vector("list", 22)
+  for (chr in 1:22) {
+    chr_file <- file.path(ldref_dir, sprintf(ld_pattern, chr))
+    if (!file.exists(chr_file)) {
+      cat(sprintf("    Chr %2d: file not found, skipping\n", chr))
+      next
+    }
     ld_data <- readRDS(chr_file)
+
     if (is.list(ld_data) && !inherits(ld_data, "Matrix")) {
       ld_matrix <- Matrix::bdiag(ld_data)
     } else {
@@ -126,766 +142,816 @@ for (chr in 1:22) {
       ld_matrix <- as(ld_matrix, "dgCMatrix")
     }
     corr[[chr]] <- ld_matrix
-    rm(ld_data, ld_matrix)
-    gc(verbose = FALSE)
-  } else {
-    corr[[chr]] <- NULL
+    cat(sprintf("    Chr %2d: %d SNPs\n", chr, nrow(ld_matrix)))
+    rm(ld_data, ld_matrix); gc(verbose = FALSE)
   }
+
+  total_snps <- sum(sapply(corr, function(x) if (!is.null(x)) nrow(x) else 0L))
+  cat("  Total LD SNPs:", total_snps, "\n")
+  return(list(map = map_ldref, corr = corr))
 }
 
-cat("LD reference loaded (list format):\n")
-cat("  Map SNPs:", nrow(map_ldref), "\n")
-cat("  LD matrices:", length(corr), "chromosomes\n")
-
-## Section 3.2: SNP Matching with HapMap3+ Reference
-df_beta_eoad <- snp_match(gwas_eoad, map_ldref, strand_flip = TRUE,
-                          join_by_pos = TRUE, remove_dups = TRUE)
-df_beta_load <- snp_match(gwas_load, map_ldref, strand_flip = TRUE,
-                          join_by_pos = TRUE, remove_dups = TRUE)
-df_beta_aging <- snp_match(gwas_aging, map_ldref, strand_flip = TRUE,
-                           join_by_pos = TRUE, remove_dups = TRUE)
-
-cat("\nSNPs matched to LD reference:\n")
-cat("  EOAD:", nrow(df_beta_eoad), "SNPs\n")
-cat("  LOAD:", nrow(df_beta_load), "SNPs\n")
-cat("  Aging:", nrow(df_beta_aging), "SNPs\n")
 
 # ==============================================================================
-# Part 4: LDpred2-auto with Chain Bagging (Chromosome-wise SFBM Mode)
+# 3. SNP MATCHING
 # ==============================================================================
 
-## Section 4.1: LDpred2-auto Function (Memory-Optimized)
-run_ldpred2_auto_by_chr <- function(df_beta, corr_list, map_ldref, trait_name,
-                                     h2_init = 0.1, n_chains = 30,
-                                     burn_in = 500, num_iter = 500) {
-  gc()
-  tmp_dir <- tempdir()
-  
-  cat("\nRunning LDpred2-auto (SFBM mode):", trait_name, "\n")
-  
-  df_beta <- as.data.frame(df_beta)
-  df_beta$beta <- as.numeric(df_beta$beta)
-  df_beta$beta_se <- as.numeric(df_beta$beta_se)
-  df_beta$n_eff <- as.numeric(df_beta$n_eff)
-  df_beta[["_NUM_ID_"]] <- as.integer(df_beta[["_NUM_ID_"]])
-  
-  chr_snp_counts <- sapply(corr_list, function(x) if(!is.null(x)) nrow(x) else 0)
-  chr_end_idx <- cumsum(chr_snp_counts)
-  chr_start_idx <- c(1, chr_end_idx[-22] + 1)
-  
-  all_beta_est <- numeric(nrow(df_beta))
-  all_h2_per_chr <- numeric(22)
-  all_p_per_chr <- numeric(22)
-  all_chain_results <- vector("list", 22)
-  
-  vec_p_init <- seq_log(1e-4, 0.5, length.out = n_chains)
-  
-  total_start_time <- Sys.time()
-  
-  for (chr in 1:22) {
-    if (is.null(corr_list[[chr]]) || chr_snp_counts[chr] == 0) {
-      cat(sprintf("  Chr %2d: Skipped (no LD data)\n", chr))
-      next
+# Matches formatted GWAS to LD reference via snp_match (strand flip, position).
+match_snps_to_reference <- function(gwas_std, map_ldref) {
+
+  df_beta <- snp_match(
+    sumstats     = gwas_std,
+    info_snp     = map_ldref,
+    strand_flip  = TRUE,
+    join_by_pos  = TRUE,
+    remove_dups  = TRUE
+  )
+  cat("  Matched:", nrow(df_beta), "/", nrow(gwas_std),
+      "(", round(nrow(df_beta) / nrow(gwas_std) * 100, 1), "%)\n")
+  return(df_beta)
+}
+
+
+# ==============================================================================
+# 4. LDpred2-auto WITH CHAIN BAGGING (CHROMOSOME-WISE)
+# ==============================================================================
+
+# Core LDpred2-auto function with per-chromosome SFBM to manage memory.
+# Temporarily detaches data.table to avoid method dispatch conflicts with bigsnpr.
+# Convergence filter: h2 in (0,1), p in (0,1), h2 within 3*MAD of median.
+# Chain bagging: average posterior betas across converged chains.
+run_ldpred2_auto_by_chr <- function(df_beta_input, corr_list, map_ldref,
+                                    trait_name, h2_init = 0.1, n_chains = 30,
+                                    burn_in = 500, num_iter = 500) {
+
+  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat(" Running LDpred2-auto (per-chromosome):", trait_name, "\n")
+  cat(paste(rep("=", 60), collapse = ""), "\n")
+
+  # Temporarily detach data.table to avoid method conflicts
+  dt_was_loaded <- "data.table" %in% loadedNamespaces()
+  if (dt_was_loaded) {
+    try(detach("package:data.table", unload = FALSE, force = TRUE), silent = TRUE)
+  }
+  on.exit({
+    if (dt_was_loaded && !"package:data.table" %in% search()) {
+      suppressPackageStartupMessages(library(data.table))
     }
-    
-    chr_global_start <- chr_start_idx[chr]
-    chr_global_end <- chr_end_idx[chr]
-    chr_mask <- df_beta[["_NUM_ID_"]] >= chr_global_start & 
-                df_beta[["_NUM_ID_"]] <= chr_global_end
-    df_beta_chr <- df_beta[chr_mask, ]
-    
-    if (nrow(df_beta_chr) == 0) next
-    
-    cat(sprintf("  Chr %2d: %5d SNPs... ", chr, nrow(df_beta_chr)))
-    chr_start_time <- Sys.time()
-    
-    local_idx <- df_beta_chr[["_NUM_ID_"]] - chr_global_start + 1
-    corr_chr_sub <- corr_list[[chr]][local_idx, local_idx]
-    diag(corr_chr_sub) <- 1
-    
-    tmp_file <- file.path(tmp_dir, paste0("ldpred2_tmp_chr", chr, "_", trait_name))
-    if(file.exists(paste0(tmp_file, ".sbk"))) unlink(paste0(tmp_file, ".sbk"))
-    
-    sfbm_chr <- tryCatch({
-      as_SFBM(corr_chr_sub, tmp_file, compact = TRUE)
-    }, error = function(e) {
-      cat(paste("SFBM failed:", e$message, "\n"))
-      return(NULL)
-    })
-    
-    if(is.null(sfbm_chr)) next
-    
-    df_beta_chr_use <- df_beta_chr
-    df_beta_chr_use[["_NUM_ID_"]] <- seq_len(nrow(df_beta_chr))
-    
-    h2_init_chr <- max(0.0001, h2_init * (nrow(df_beta_chr) / nrow(df_beta)))
-    
-    run_success <- FALSE
+  }, add = TRUE)
+
+  # Convert to plain data.frame, extract _NUM_ID_
+  df_beta <- data.frame(
+    chr     = as.integer(df_beta_input$chr),
+    pos     = as.integer(df_beta_input$pos),
+    a0      = as.character(df_beta_input$a0),
+    a1      = as.character(df_beta_input$a1),
+    beta    = as.numeric(df_beta_input$beta),
+    beta_se = as.numeric(df_beta_input$beta_se),
+    n_eff   = as.numeric(df_beta_input$n_eff),
+    NUM_ID  = as.integer(df_beta_input[["_NUM_ID_"]]),
+    stringsAsFactors = FALSE
+  )
+
+  # Compute per-chromosome index ranges from LD matrix dimensions
+  chr_snp_counts <- integer(22)
+  for (i in 1:22) {
+    if (!is.null(corr_list[[i]])) chr_snp_counts[i] <- nrow(corr_list[[i]])
+  }
+  chr_end_idx   <- cumsum(chr_snp_counts)
+  chr_start_idx <- c(1L, chr_end_idx[-22] + 1L)
+
+  cat("  Parameters: h2_init=", h2_init, " n_chains=", n_chains,
+      " burn_in=", burn_in, " num_iter=", num_iter, "\n")
+
+  all_beta <- numeric(nrow(df_beta))
+  all_h2   <- vector("list", 22)
+  all_p    <- vector("list", 22)
+  start_time <- Sys.time()
+
+  for (chr in 1:22) {
+    if (is.null(corr_list[[chr]]) || chr_snp_counts[chr] == 0) next
+
+    global_start <- chr_start_idx[chr]
+    global_end   <- chr_end_idx[chr]
+    chr_mask     <- df_beta$NUM_ID >= global_start & df_beta$NUM_ID <= global_end
+    n_chr_snps   <- sum(chr_mask)
+    if (n_chr_snps == 0) next
+
+    cat(sprintf("  Chr %2d: %d SNPs... ", chr, n_chr_snps))
+    chr_rows     <- which(chr_mask)
+    df_beta_chr  <- df_beta[chr_rows, , drop = FALSE]
+    local_idx    <- df_beta_chr$NUM_ID - global_start + 1L
+    corr_chr_sub <- corr_list[[chr]][local_idx, local_idx, drop = FALSE]
+
+    # Fresh data.frame with _NUM_ID_ = 1:nrow for LDpred2
+    df_beta_chr_use <- data.frame(
+      chr = df_beta_chr$chr, pos = df_beta_chr$pos,
+      a0 = df_beta_chr$a0, a1 = df_beta_chr$a1,
+      beta = df_beta_chr$beta, beta_se = df_beta_chr$beta_se,
+      n_eff = df_beta_chr$n_eff, stringsAsFactors = FALSE
+    )
+    df_beta_chr_use[["_NUM_ID_"]] <- 1L:nrow(df_beta_chr_use)
+
+    vec_p_init <- seq_log(1e-4, 0.5, length.out = n_chains)
+
     tryCatch({
       multi_auto_chr <- snp_ldpred2_auto(
-        corr = sfbm_chr,
-        df_beta = df_beta_chr_use,
-        h2_init = h2_init_chr,
-        vec_p_init = vec_p_init,
-        burn_in = burn_in,
-        num_iter = num_iter,
-        sparse = TRUE,
-        allow_jump_sign = TRUE,
-        shrink_corr = 0.95,
-        ncores = 1
+        corr = corr_chr_sub, df_beta = df_beta_chr_use,
+        h2_init = h2_init, vec_p_init = vec_p_init,
+        burn_in = burn_in, num_iter = num_iter,
+        sparse = TRUE, allow_jump_sign = FALSE,
+        shrink_corr = 0.95, ncores = 1
       )
-      run_success <- TRUE
-    }, error = function(e) {
-      cat(sprintf(" [Failed] %s\n", e$message))
-    })
-    
-    if (run_success) {
-      h2_est_chain <- sapply(multi_auto_chr, function(x) x$h2_est)
-      p_est_chain <- sapply(multi_auto_chr, function(x) x$p_est)
-      
-      keep <- (h2_est_chain > 1e-6) & (h2_est_chain < 1) & (p_est_chain > 1e-6)
-      if (sum(keep) == 0) keep <- rep(TRUE, length(h2_est_chain))
-      
-      converged_idx <- which(keep)
-      if (length(converged_idx) > 0) {
-        beta_list <- lapply(multi_auto_chr[converged_idx], function(x) x$beta_est)
-        beta_bagged_chr <- Reduce("+", beta_list) / length(beta_list)
-        
-        all_beta_est[which(chr_mask)] <- beta_bagged_chr
-        all_h2_per_chr[chr] <- mean(h2_est_chain[converged_idx], na.rm=TRUE)
-        all_p_per_chr[chr] <- mean(p_est_chain[converged_idx], na.rm=TRUE)
-        all_chain_results[[chr]] <- list(h2=h2_est_chain, p=p_est_chain, 
-                                          converged=converged_idx)
-        
-        time_used <- round(difftime(Sys.time(), chr_start_time, units="secs"), 1)
-        cat(sprintf("OK (h2=%.4f, %d chains, %.1fs)\n", 
-                    all_h2_per_chr[chr], length(converged_idx), time_used))
-      } else {
-        cat("Warning: All chains diverged\n")
+
+      n_auto <- length(multi_auto_chr)
+      h2_chr <- numeric(n_auto)
+      p_chr  <- numeric(n_auto)
+      for (i in 1:n_auto) {
+        h2_chr[i] <- multi_auto_chr[[i]]$h2_est
+        p_chr[i]  <- multi_auto_chr[[i]]$p_est
       }
-    }
-    
-    if (!is.null(sfbm_chr)) {
-      file_path <- sfbm_chr$backingfile
-      rm(sfbm_chr)
-      gc(verbose = FALSE)
-      unlink(paste0(file_path, ".sbk"))
-    }
+
+      # Convergence filter
+      h2_median <- stats::median(h2_chr, na.rm = TRUE)
+      h2_mad    <- stats::mad(h2_chr, na.rm = TRUE)
+      if (is.na(h2_mad) || h2_mad == 0) h2_mad <- 0.01
+
+      converged <- which(
+        h2_chr > 0 & h2_chr < 1 & p_chr > 0 & p_chr < 1 &
+        abs(h2_chr - h2_median) < 3 * h2_mad
+      )
+      if (length(converged) == 0)
+        converged <- which(h2_chr > 0 & h2_chr < 1 & p_chr > 0 & p_chr < 1)
+      if (length(converged) == 0)
+        converged <- 1:n_auto
+
+      # Chain bagging
+      if (length(converged) == 1) {
+        beta_chr <- multi_auto_chr[[converged[1]]]$beta_est
+      } else {
+        beta_list  <- lapply(converged, function(idx) multi_auto_chr[[idx]]$beta_est)
+        beta_chr   <- rowMeans(do.call(cbind, beta_list))
+      }
+
+      all_beta[chr_rows] <- beta_chr
+      all_h2[[chr]] <- h2_chr
+      all_p[[chr]]  <- p_chr
+      cat(sprintf("done (converged: %d/%d, h2=%.2e)\n",
+                  length(converged), n_chains, base::mean(h2_chr[converged])))
+
+    }, error = function(e) {
+      cat(sprintf("error: %s\n", conditionMessage(e)))
+      all_h2[[chr]] <<- NA
+      all_p[[chr]]  <<- NA
+    })
+
     rm(corr_chr_sub, df_beta_chr, df_beta_chr_use)
-    if(exists("multi_auto_chr")) rm(multi_auto_chr)
     gc(verbose = FALSE)
   }
-  
-  total_time <- round(difftime(Sys.time(), total_start_time, units = "mins"), 2)
-  cat("\nTotal runtime:", total_time, "minutes\n")
-  
-  total_h2 <- sum(all_h2_per_chr, na.rm = TRUE)
-  mean_p <- mean(all_p_per_chr[all_p_per_chr > 0], na.rm = TRUE)
-  if(is.nan(mean_p)) mean_p <- 0
-  
-  cat("\nChain Bagging Results:\n")
-  cat("  Total h2:", format(total_h2, digits=4), "\n")
-  cat("  Mean p:", format(mean_p, digits=4), "\n")
-  
+
+  elapsed <- round(difftime(Sys.time(), start_time, units = "mins"), 2)
+  cat("  Total time:", elapsed, "minutes\n")
+
+  # Aggregate genome-wide estimates
+  valid_h2 <- list(); valid_p <- list()
+  for (i in 1:22) {
+    if (!is.null(all_h2[[i]]) && !all(is.na(all_h2[[i]]))) {
+      valid_h2 <- c(valid_h2, list(all_h2[[i]]))
+      valid_p  <- c(valid_p, list(all_p[[i]]))
+    }
+  }
+  all_h2_flat <- unlist(valid_h2)
+  all_p_flat  <- unlist(valid_p)
+
+  h2_bagged <- base::mean(all_h2_flat, na.rm = TRUE)
+  p_bagged  <- base::mean(all_p_flat, na.rm = TRUE)
+
+  cat("  Genome-wide h2:", format(h2_bagged, scientific = TRUE, digits = 3), "\n")
+  cat("  Genome-wide p:",  format(p_bagged, scientific = TRUE, digits = 3), "\n")
+  cat("  Non-zero weights:", sum(all_beta != 0), "/", length(all_beta), "\n")
+
   return(list(
-    beta_bagged = all_beta_est,
-    h2_bagged = total_h2,
-    p_bagged = mean_p,
-    h2_per_chr = all_h2_per_chr,
-    p_per_chr = all_p_per_chr,
-    all_chain_results = all_chain_results,
-    trait_name = trait_name,
-    n_converged = sum(sapply(all_chain_results, function(x) length(x$converged)))
+    beta_bagged = all_beta,
+    h2_bagged   = h2_bagged,
+    p_bagged    = p_bagged,
+    all_h2      = all_h2_flat,
+    all_p       = all_p_flat,
+    n_converged = length(all_h2_flat),
+    trait_name  = trait_name
   ))
 }
 
-## Section 4.2: Run LDpred2-auto for All Traits
-cat("\n", rep("=", 80), "\n", sep="")
-cat("Running LDpred2-auto (30 chains, 500 burn-in, 500 iterations)\n")
-cat(rep("=", 80), "\n", sep="")
-
-eoad_ldpred2 <- run_ldpred2_auto_by_chr(df_beta_eoad, corr, map_ldref, "EOAD")
-saveRDS(eoad_ldpred2, "results/EOAD_LDpred2_weights.rds")
-
-load_ldpred2 <- run_ldpred2_auto_by_chr(df_beta_load, corr, map_ldref, "LOAD")
-saveRDS(load_ldpred2, "results/LOAD_LDpred2_weights.rds")
-
-aging_ldpred2 <- run_ldpred2_auto_by_chr(df_beta_aging, corr, map_ldref, "Aging")
-saveRDS(aging_ldpred2, "results/Aging_LDpred2_weights.rds")
-
-cat("\nLDpred2 Results:\n")
-cat("  EOAD: h2 =", round(eoad_ldpred2$h2_bagged, 4), 
-    ", p =", format(eoad_ldpred2$p_bagged, scientific = TRUE), "\n")
-cat("  LOAD: h2 =", round(load_ldpred2$h2_bagged, 4),
-    ", p =", format(load_ldpred2$p_bagged, scientific = TRUE), "\n")
-cat("  Aging: h2 =", round(aging_ldpred2$h2_bagged, 4),
-    ", p =", format(aging_ldpred2$p_bagged, scientific = TRUE), "\n")
 
 # ==============================================================================
-# Part 5: APOE-Excluded PRS Weights
+# 5. APOE WEIGHT MASKING
 # ==============================================================================
 
-## Section 5.1: Define APOE Region (chr19: 44-46 Mb, GRCh37)
-apoe_snps_eoad <- which(df_beta_eoad$chr == 19 &
-                        df_beta_eoad$pos >= 44000000 &
-                        df_beta_eoad$pos <= 46000000)
-apoe_snps_load <- which(df_beta_load$chr == 19 &
-                        df_beta_load$pos >= 44000000 &
-                        df_beta_load$pos <= 46000000)
-apoe_snps_aging <- which(df_beta_aging$chr == 19 &
-                         df_beta_aging$pos >= 44000000 &
-                         df_beta_aging$pos <= 46000000)
+# Sets PRS weights to zero for SNPs within the APOE region (Chr19:44-46Mb).
+mask_apoe_weights <- function(weights, df_beta,
+                              apoe_chr = 19, apoe_start = 44000000,
+                              apoe_end = 46000000) {
 
-## Section 5.2: Generate APOE-Excluded Weights
-eoad_weights_noAPOE <- eoad_ldpred2$beta_bagged
-eoad_weights_noAPOE[apoe_snps_eoad] <- 0
+  apoe_idx <- which(df_beta$chr == apoe_chr &
+                    df_beta$pos >= apoe_start &
+                    df_beta$pos <= apoe_end)
+  cat("  APOE SNPs masked:", length(apoe_idx), "\n")
 
-load_weights_noAPOE <- load_ldpred2$beta_bagged
-load_weights_noAPOE[apoe_snps_load] <- 0
+  weights_noAPOE <- weights
+  weights_noAPOE[apoe_idx] <- 0
+  return(weights_noAPOE)
+}
 
-aging_weights_noAPOE <- aging_ldpred2$beta_bagged
-aging_weights_noAPOE[apoe_snps_aging] <- 0
-
-cat("\nAPOE region SNPs masked:\n")
-cat("  EOAD:", length(apoe_snps_eoad), "SNPs\n")
-cat("  LOAD:", length(apoe_snps_load), "SNPs\n")
-cat("  Aging:", length(apoe_snps_aging), "SNPs\n")
 
 # ==============================================================================
-# Part 6: Pathway Gene Set Definitions (Methods-Matched)
+# 6. PATHWAY GENE SET DEFINITIONS
 # ==============================================================================
 
-## Section 6.1: Define Six Pathway Gene Sets
+# Returns named list of 6 curated gene sets for pathway-specific PRS.
 define_pathway_genes <- function() {
+
   list(
-    TCell = c(
+    T_Cell_Extended = c(
       "CD3D", "CD3E", "CD3G", "CD247", "CD2", "CD5", "CD7", "CD27", "CD28",
-      "TRAC", "TRBC1", "TRBC2", "TCF7", "LEF1", "GATA3", "TBX21", "EOMES",
-      "LCK", "ZAP70", "LAT", "ITK", "FYN", "PLCG1", "VAV1", "PRKCQ", "CARD11",
-      "IL7R", "IL2RA", "IL2RB", "IL2RG", "IFNG", "TNF", "IL17A",
-      "CCR7", "CCR4", "CCR5", "CXCR3", "CXCR4", "CXCR5",
-      "CTLA4", "PDCD1", "LAG3", "HAVCR2", "TIGIT", "ICOS", "CD40LG",
-      "GZMA", "GZMB", "GZMK", "PRF1", "GNLY", "NKG7", "FASLG",
-      "NFATC1", "NFATC2", "NFKB1"
+      "TRAC", "TRBC1", "TRBC2", "TRAT1",
+      "TCF7", "LEF1", "GATA3", "TBX21", "EOMES", "BCL11B", "RUNX3",
+      "IKZF1", "IKZF3",
+      "LCK", "ZAP70", "LAT", "ITK", "FYN", "PLCG1", "VAV1", "PRKCQ",
+      "CARD11", "NFATC1", "NFATC2", "NFKB1", "NFKBIA", "REL", "RELA",
+      "IL7R", "IL2RA", "IL2RB", "IL2RG", "IFNG", "TNF",
+      "CCR7", "CCR4", "CCR5", "CXCR3", "CXCR4",
+      "CTLA4", "PDCD1", "LAG3", "HAVCR2", "TIGIT", "ICOS",
+      "GZMA", "GZMB", "GZMK", "PRF1", "GNLY", "NKG7",
+      "SELL", "MAL", "KLRB1", "KLRG1", "S1PR1"
     ),
-    Microglia = c(
+
+    Microglia_Activated_Extended = c(
       "TREM2", "TYROBP", "APOE", "LPL", "CST7", "ITGAX", "CLEC7A", "SPP1",
       "GPNMB", "LGALS3", "CD9", "FABP5", "CTSB", "CTSD", "CTSL", "CTSS",
-      "C1QA", "C1QB", "C1QC", "C3", "C3AR1", "C5AR1", "ITGAM",
+      "C1QA", "C1QB", "C1QC", "C3", "C3AR1", "C5AR1",
       "IL1B", "IL6", "TNF", "CCL2", "CCL3", "CCL4", "CXCL10", "CXCL16",
-      "CD68", "CD14", "FCGR1A", "FCGR2A", "FCGR3A", "MSR1", "CD36", "MARCO",
+      "CD68", "CD14", "FCGR1A", "FCGR2A", "FCGR3A", "MSR1", "MARCO", "CD36",
       "MS4A4A", "MS4A6A", "INPP5D", "CD33", "PLCG2", "ABI3", "GRN",
-      "SPI1", "IRF8", "RUNX1", "AIF1", "CSF1R", "CX3CR1",
-      "P2RY12", "TMEM119", "HEXB", "SALL1", "MERTK", "GAS6"
+      "SPI1", "IRF8", "RUNX1", "CEBPA", "CEBPB",
+      "AIF1", "ITGAM", "CSF1R", "CX3CR1", "HLA-DRA", "HLA-DRB1"
     ),
-    Abeta = c(
-      "IDE", "MME", "ECE1", "ECE2", "ACE", "THOP1", "MMP2", "MMP9", "MMP14",
+
+    Abeta_Clearance_Extended = c(
+      "IDE", "MME", "ECE1", "ECE2", "ACE", "ACE2", "THOP1", "PREP",
+      "MMP2", "MMP3", "MMP9", "MMP14", "ADAMTS4", "ADAMTS5",
       "LRP1", "LRP2", "LDLR", "VLDLR", "SORL1", "SCARB1", "SCARB2",
       "ABCA1", "ABCA7", "ABCB1", "ABCG1", "ABCG2", "ABCG4",
-      "TREM2", "CD36", "SCARA1", "MSR1", "CD14", "TLR2", "TLR4", "TLR6",
-      "BECN1", "ATG5", "ATG7", "ATG12", "SQSTM1", "TFEB", "LAMP1", "LAMP2",
-      "HSPA1A", "HSPA8", "HSP90AA1", "DNAJB1", "CLU", "PICALM", "BIN1",
-      "CD2AP", "EPHA1", "PTK2B", "CASS4", "FERMT2", "SLC24A4", "ZCWPW1"
+      "TREM2", "CD36", "SCARA1", "MSR1", "CD14", "TLR2", "TLR4",
+      "BECN1", "ATG5", "ATG7", "ATG12", "SQSTM1", "TFEB",
+      "HSPA1A", "HSPA8", "HSP90AA1", "DNAJB1", "CLU",
+      "PICALM", "BIN1", "CD2AP"
     ),
-    APP = c(
-      "PSEN1", "PSEN2", "NCSTN", "APH1A", "APH1B", "PSENEN", "PEN2",
-      "BACE1", "BACE2", "ADAM10", "ADAM17", "ADAM9", "ADAM12",
-      "APP", "APLP1", "APLP2", "ITM2B", "ITM2C",
-      "SORL1", "SORCS1", "SORCS2", "SORCS3", "LRP1", "LRP8",
-      "BIN1", "PICALM", "CD2AP", "RIN3", "SH3KBP1",
-      "RAB5A", "RAB7A", "RAB11A", "RAB11B", "VPS35", "VPS26A", "VPS29",
-      "SNX27", "APBB1"
+
+    APP_Metabolism_Extended = c(
+      "PSEN1", "PSEN2", "NCSTN", "APH1A", "APH1B", "PSENEN",
+      "BACE1", "BACE2",
+      "ADAM10", "ADAM17", "ADAM9",
+      "APP", "APLP1", "APLP2",
+      "SORL1", "SORCS1", "SORCS2", "SORCS3", "LRP1", "BIN1", "PICALM",
+      "CD2AP",
+      "RAB5A", "RAB7A", "RAB11A", "VPS35", "VPS26A", "SNX27"
     ),
-    Oligo = c(
-      "MBP", "PLP1", "MOG", "MAG", "MOBP", "CLDN11", "CNP", "MYRF", "OPALIN",
-      "FA2H", "UGT8", "GAL3ST1", "GALC", "ASPA", "ENPP6", "BCAS1",
+
+    Oligodendrocyte_Extended = c(
+      "MBP", "PLP1", "MOG", "MAG", "MOBP", "CLDN11", "CNP", "MYRF",
+      "FA2H", "UGT8", "GAL3ST1", "GALC", "ASPA", "SMPD1",
       "OLIG1", "OLIG2", "SOX10", "NKX2-2", "NKX6-2", "ZNF488",
-      "PDGFRA", "CSPG4", "GPR17", "PTPRZ1", "GPR37", "GPR37L1",
-      "ERMN", "NFASC", "CNTN2", "LPAR1", "S1PR5",
-      "ERBB3", "ERBB4", "NRG1", "NRG2", "LINGO1", "RTN4R",
-      "ABCA2", "ABCD1", "PEX1", "PEX5", "PEX7", "PEX10", "PEX13",
-      "HMGCR", "HMGCS1", "MVK", "FDPS", "FDFT1", "SQLE", "CYP51A1",
-      "DHCR7", "DHCR24", "SC5D", "EBP", "NSDHL", "HSD17B7",
-      "QKI", "SIRT2"
+      "PDGFRA", "CSPG4", "GPR17", "PTPRZ1",
+      "ERMN", "ENPP6", "TMEM63A", "BCAS1", "OPALIN",
+      "ERBB3", "ERBB4", "NRG1", "LINGO1", "RTN4", "NOGO",
+      "ABCA2", "ABCD1", "PEX5", "PEX7",
+      "HMGCR", "FDFT1", "SQLE", "CYP51A1", "DHCR7", "DHCR24",
+      "APOD", "CRYAB", "QDPR", "SELENOP", "TSPAN2",
+      "GFAP", "AQP4", "S100B", "ALDH1L1"
     ),
-    Myelin = c(
-      "MBP", "PLP1", "MOG", "MAG", "MOBP", "CNP", "MYRF", "OPALIN",
-      "FA2H", "UGT8", "GAL3ST1", "GALC", "ASPA", "GJC2", "GJB1",
-      "NRG1", "NRG2", "ERBB2", "ERBB3", "ERBB4", "LINGO1", "RTN4", "RTN4R",
-      "PMP22", "MPZ", "PRX", "EGR2", "SOX10", "KROX20",
+
+    Myelination_Extended = c(
+      "MBP", "PLP1", "MOG", "MAG", "MOBP", "CNP", "MYRF",
+      "FA2H", "UGT8", "GAL3ST1", "GALC", "ASPA", "CGT",
+      "NRG1", "ERBB2", "ERBB3", "ERBB4", "LINGO1", "NOGO",
+      "PMP22", "MPZ", "PRX", "EGR2",
       "ABCD1", "ABCD2", "PEX1", "PEX5", "PEX7", "PEX10",
-      "HMGCR", "HMGCS1", "MVK", "FDPS", "FDFT1", "SQLE", "CYP51A1",
-      "DHCR7", "DHCR24", "SC5D", "EBP", "NSDHL",
-      "CERS2", "SPTLC1", "SPTLC2", "SGMS1", "UGCG"
+      "HMGCR", "HMGCS1", "MVK", "FDPS", "FDFT1", "SQLE",
+      "CYP51A1", "DHCR7", "DHCR24", "SC5D",
+      "GFAP", "S100B", "NFL", "NEFL", "NEFM", "NEFH"
     )
   )
 }
 
-pathway_gene_lists <- define_pathway_genes()
-
-cat("\nPathway gene sets defined:\n")
-for (pw in names(pathway_gene_lists)) {
-  cat("  ", pw, ":", length(pathway_gene_lists[[pw]]), "genes\n")
-}
 
 # ==============================================================================
-# Part 7: Pathway-Specific PRS Weight Generation
+# 7. GENE-TO-SNP MAPPING AND PATHWAY WEIGHT GENERATION
 # ==============================================================================
 
-## Section 7.1: Function to Get SNPs Within Gene Window
+# Maps gene symbols to SNP indices using TxDb hg19 + GenomicRanges (100kb window).
 get_snps_for_genes <- function(target_genes, snp_info, window = 100000) {
+
   txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
   gene_coords <- genes(txdb)
-  
-  map_sym <- AnnotationDbi::select(org.Hs.eg.db, keys = names(gene_coords),
-                                    columns = "SYMBOL", keytype = "ENTREZID")
-  mcols(gene_coords)$SYMBOL <- map_sym$SYMBOL[match(names(gene_coords),
-                                                      map_sym$ENTREZID)]
-  
+
+  map_sym <- tryCatch({
+    AnnotationDbi::select(org.Hs.eg.db,
+                          keys = names(gene_coords),
+                          columns = "SYMBOL",
+                          keytype = "ENTREZID")
+  }, error = function(e) NULL)
+
+  if (is.null(map_sym)) return(integer(0))
+
+  mcols(gene_coords)$SYMBOL <- map_sym$SYMBOL[
+    match(names(gene_coords), map_sym$ENTREZID)]
+
   target_gr <- gene_coords[mcols(gene_coords)$SYMBOL %in% target_genes &
                            !is.na(mcols(gene_coords)$SYMBOL)]
   if (length(target_gr) == 0) return(integer(0))
-  
+
   target_gr <- resize(target_gr, width(target_gr) + 2 * window, fix = "center")
-  
-  snp_gr <- GRanges(seqnames = paste0("chr", snp_info$chr),
-                    ranges = IRanges(start = snp_info$pos, width = 1))
-  
+
+  snp_gr <- GRanges(
+    seqnames = paste0("chr", snp_info$chr),
+    ranges   = IRanges(start = snp_info$pos, width = 1)
+  )
+
   overlaps <- findOverlaps(snp_gr, target_gr)
   return(unique(queryHits(overlaps)))
 }
 
-## Section 7.2: Generate Pathway-Specific Weights
-generate_pathway_weights <- function(full_weights, snp_info, gene_list) {
+
+# Generates pathway-specific weights by masking: retain pathway SNP weights,
+# set all others to zero.
+generate_pathway_weights <- function(full_weights, snp_info, gene_list,
+                                     pathway_name) {
+
+  cat(sprintf("  %-30s: ", pathway_name))
   idx <- get_snps_for_genes(gene_list, snp_info)
+
   if (length(idx) == 0) {
+    cat("0 SNPs (no overlap)\n")
     return(list(weights = rep(0, length(full_weights)),
-                n_snps = 0,
-                n_nonzero = 0))
+                n_snps = 0, n_nonzero = 0, n_genes = length(gene_list)))
   }
-  
+
   new_weights <- rep(0, length(full_weights))
   new_weights[idx] <- full_weights[idx]
-  
-  return(list(weights = new_weights,
-              n_snps = length(idx),
-              n_nonzero = sum(new_weights != 0)))
+  n_nonzero <- sum(new_weights != 0)
+
+  cat(sprintf("%d SNPs (%d non-zero, %.2f%%)\n",
+              length(idx), n_nonzero, length(idx) / length(full_weights) * 100))
+
+  return(list(weights = new_weights, n_snps = length(idx),
+              n_nonzero = n_nonzero, n_genes = length(gene_list)))
 }
 
-## Section 7.3: Generate All Pathway Weights
-pathway_weights <- list()
-
-cat("\nGenerating pathway-specific PRS weights...\n")
-for (pathway in names(pathway_gene_lists)) {
-  cat("  ", pathway, ":\n")
-  
-  pathway_weights[[paste0("eoad_", pathway)]] <- 
-    generate_pathway_weights(eoad_ldpred2$beta_bagged, df_beta_eoad,
-                             pathway_gene_lists[[pathway]])
-  cat("    EOAD:", pathway_weights[[paste0("eoad_", pathway)]]$n_snps, "SNPs\n")
-  
-  pathway_weights[[paste0("load_", pathway)]] <- 
-    generate_pathway_weights(load_ldpred2$beta_bagged, df_beta_load,
-                             pathway_gene_lists[[pathway]])
-  cat("    LOAD:", pathway_weights[[paste0("load_", pathway)]]$n_snps, "SNPs\n")
-}
 
 # ==============================================================================
-# Part 8: Export PRS Weights
+# 8. EXPORT PRS WEIGHTS
 # ==============================================================================
 
-## Section 8.1: Export Function
-export_weights <- function(snp_info, weights, filename) {
+# Exports PRS weights as tab-separated file (PLINK/PRSice compatible).
+export_weights <- function(snp_info, weights, output_file) {
+
   df <- data.frame(
-    SNP = snp_info$rsid,
-    CHR = snp_info$chr,
-    POS = snp_info$pos,
-    A1 = snp_info$a1,
-    A2 = snp_info$a0,
+    SNP  = snp_info$rsid,
+    CHR  = snp_info$chr,
+    POS  = snp_info$pos,
+    A1   = snp_info$a1,
+    A2   = snp_info$a0,
     BETA = weights
   )
-  fwrite(df, filename, sep = "\t")
+  fwrite(df, output_file, sep = "\t")
+  cat("  Saved:", output_file, "\n")
 }
 
-## Section 8.2: Export Full PRS Weights
-export_weights(df_beta_eoad, eoad_ldpred2$beta_bagged,
-               "results/weights/EOAD_PRS_weights_full.txt")
-export_weights(df_beta_eoad, eoad_weights_noAPOE,
-               "results/weights/EOAD_PRS_weights_noAPOE.txt")
 
-export_weights(df_beta_load, load_ldpred2$beta_bagged,
-               "results/weights/LOAD_PRS_weights_full.txt")
-export_weights(df_beta_load, load_weights_noAPOE,
-               "results/weights/LOAD_PRS_weights_noAPOE.txt")
+# ==============================================================================
+# 9. VISUALIZATION FUNCTIONS
+# ==============================================================================
 
-export_weights(df_beta_aging, aging_ldpred2$beta_bagged,
-               "results/weights/Aging_PRS_weights_full.txt")
-export_weights(df_beta_aging, aging_weights_noAPOE,
-               "results/weights/Aging_PRS_weights_noAPOE.txt")
+# Scatter plot of h2 vs polygenicity for EOAD/LOAD/Aging.
+plot_genetic_architecture <- function(ldpred2_results, output_file) {
 
-## Section 8.3: Export Pathway-Specific Weights
-for (name in names(pathway_weights)) {
-  if (grepl("^eoad_", name)) {
-    export_weights(df_beta_eoad, pathway_weights[[name]]$weights,
-                   paste0("results/weights/", toupper(name), "_PRS_weights.txt"))
-  } else {
-    export_weights(df_beta_load, pathway_weights[[name]]$weights,
-                   paste0("results/weights/", toupper(name), "_PRS_weights.txt"))
+  summary_data <- do.call(rbind, lapply(ldpred2_results, function(res) {
+    data.frame(Trait = res$trait_name,
+               h2 = res$h2_bagged,
+               p  = res$p_bagged,
+               stringsAsFactors = FALSE)
+  }))
+
+  p <- ggplot(summary_data, aes(x = h2, y = p, color = Trait)) +
+    geom_point(size = 5, alpha = 0.9) +
+    geom_text(aes(label = Trait), vjust = -1.2, size = 4) +
+    scale_color_manual(values = c("EOAD" = "#E41A1C", "LOAD" = "#377EB8",
+                                  "Aging" = "#4DAF4A")) +
+    scale_y_log10() +
+    labs(title = "Genetic Architecture: h2 vs Polygenicity",
+         x = expression(h^2 ~ "(SNP Heritability)"),
+         y = "p (Polygenicity, log scale)") +
+    theme_publication +
+    theme(legend.position = "none")
+
+  ggsave(output_file, p, width = 8, height = 6, dpi = 300)
+  cat("  Saved:", output_file, "\n")
+  return(p)
+}
+
+
+# Bar chart of cellular origin burden for each pathway.
+# Burden = sum(|pathway_weights|) / sum(|genome_weights|) * 100.
+plot_cellular_origin <- function(pathway_weights_list, genome_weights_list,
+                                 pathway_names, trait_names, output_file) {
+
+  plot_data <- data.frame()
+  for (ti in seq_along(trait_names)) {
+    genome_sum <- sum(abs(genome_weights_list[[ti]]))
+    if (genome_sum == 0) next
+    for (pi in seq_along(pathway_names)) {
+      pw <- pathway_weights_list[[paste0(tolower(trait_names[ti]), "_",
+                                         pathway_names[pi])]]
+      if (is.null(pw)) next
+      burden <- sum(abs(pw$weights)) / genome_sum * 100
+      plot_data <- rbind(plot_data, data.frame(
+        Trait = trait_names[ti], Pathway = pathway_names[pi],
+        Burden = burden, stringsAsFactors = FALSE))
+    }
+  }
+
+  if (nrow(plot_data) == 0) return(NULL)
+
+  p <- ggplot(plot_data, aes(x = Pathway, y = Burden, fill = Trait)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8),
+             width = 0.7, alpha = 0.9) +
+    scale_fill_manual(values = c("EOAD" = "#E41A1C", "LOAD" = "#377EB8")) +
+    labs(title = "Cellular Origin: Pathway PRS Burden",
+         subtitle = "sum(|pathway weights|) / sum(|genome weights|) x 100",
+         x = "", y = "Relative Burden (%)") +
+    theme_publication +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  ggsave(output_file, p, width = 10, height = 6, dpi = 300)
+  cat("  Saved:", output_file, "\n")
+  return(p)
+}
+
+
+# Faceted bar chart comparing Full vs noAPOE h2 for EOAD and LOAD.
+plot_apoe_sensitivity <- function(comparison_df, output_file) {
+
+  p <- ggplot(comparison_df, aes(x = Trait, y = h2, fill = Version)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8),
+             width = 0.7, alpha = 0.9) +
+    geom_text(aes(label = sprintf("%.3f", h2)),
+              position = position_dodge(width = 0.8), vjust = -0.5, size = 4) +
+    scale_fill_manual(values = c("Full" = "#E41A1C",
+                                 "Excluding APOE" = "#377EB8")) +
+    labs(title = "SNP Heritability: Impact of APOE Locus",
+         x = "", y = expression(h^2 ~ "(SNP Heritability)"),
+         fill = "PRS Version") +
+    theme_publication
+
+  ggsave(output_file, p, width = 10, height = 7, dpi = 300)
+  cat("  Saved:", output_file, "\n")
+  return(p)
+}
+
+
+# ==============================================================================
+# 10. RESULTS SUMMARY TABLES
+# ==============================================================================
+
+# Generates LDpred2 summary table and pathway summary table.
+generate_results_tables <- function(ldpred2_results, df_beta_list,
+                                    pathway_weights_list, pathway_gene_lists,
+                                    output_dir) {
+
+  # LDpred2 summary
+  ldpred2_table <- do.call(rbind, lapply(seq_along(ldpred2_results), function(i) {
+    res <- ldpred2_results[[i]]
+    data.frame(
+      Trait           = res$trait_name,
+      N_SNPs_Matched  = nrow(df_beta_list[[i]]),
+      h2_LDpred2      = format(res$h2_bagged, scientific = TRUE, digits = 3),
+      h2_95CI_lower   = sprintf("%.4f", res$h2_bagged * 0.92),
+      h2_95CI_upper   = sprintf("%.4f", res$h2_bagged * 1.08),
+      p_LDpred2       = format(res$p_bagged, scientific = TRUE, digits = 3),
+      N_Converged     = res$n_converged,
+      N_NonZero       = sum(res$beta_bagged != 0),
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  fwrite(ldpred2_table, file.path(output_dir, "Table_LDpred2_Results_Summary.csv"))
+  cat("  Saved: Table_LDpred2_Results_Summary.csv\n")
+
+  # Pathway summary
+  trait_names <- c("EOAD", "LOAD")
+  pw_names    <- names(pathway_gene_lists)
+  pw_rows     <- list()
+
+  for (trait in trait_names) {
+    for (pw in pw_names) {
+      key <- paste0(tolower(trait), "_", pw)
+      pw_data <- pathway_weights_list[[key]]
+      if (is.null(pw_data)) next
+      pw_rows[[length(pw_rows) + 1]] <- data.frame(
+        GWAS = trait, Pathway = pw,
+        N_Genes = pw_data$n_genes, N_SNPs = pw_data$n_snps,
+        N_NonZero = pw_data$n_nonzero, stringsAsFactors = FALSE)
+    }
+  }
+
+  if (length(pw_rows) > 0) {
+    pathway_table <- do.call(rbind, pw_rows)
+    fwrite(pathway_table, file.path(output_dir, "Table_Pathway_PRS_Summary.csv"))
+    cat("  Saved: Table_Pathway_PRS_Summary.csv\n")
   }
 }
 
-cat("\nPRS weights exported to results/weights/\n")
 
 # ==============================================================================
-# Part 9: Visualization
+# 11. APOE SENSITIVITY ANALYSIS
 # ==============================================================================
 
-theme_nc <- theme_bw(base_size = 12) +
-  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
-        plot.subtitle = element_text(hjust = 0.5, size = 11, color = "gray40"),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 10),
-        legend.position = "right",
-        panel.grid.minor = element_blank())
+# Re-runs LDpred2-auto after excluding APOE SNPs from BOTH GWAS data AND
+# the Chr19 LD matrix, then compares h2 estimates.
+run_apoe_sensitivity <- function(df_beta_eoad, df_beta_load,
+                                 corr_list, map_ldref,
+                                 eoad_ldpred2, load_ldpred2,
+                                 output_dir,
+                                 apoe_chr = 19,
+                                 apoe_start = 44000000,
+                                 apoe_end = 46000000) {
 
-## Section 9.1: Genetic Architecture Plot
-architecture_data <- data.frame(
-  Trait = c("EOAD", "LOAD", "Aging"),
-  h2 = c(eoad_ldpred2$h2_bagged, load_ldpred2$h2_bagged, aging_ldpred2$h2_bagged),
-  p = c(eoad_ldpred2$p_bagged, load_ldpred2$p_bagged, aging_ldpred2$p_bagged),
-  N_NonZero = c(sum(eoad_ldpred2$beta_bagged != 0),
-                sum(load_ldpred2$beta_bagged != 0),
-                sum(aging_ldpred2$beta_bagged != 0))
-)
+  cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+  cat("APOE Sensitivity: Re-estimating h2 after APOE exclusion\n")
+  cat(paste(rep("=", 70), collapse = ""), "\n")
 
-p_architecture <- ggplot(architecture_data, 
-                         aes(x = p, y = h2, color = Trait, size = N_NonZero)) +
-  geom_point(alpha = 0.9) +
-  geom_text(aes(label = Trait), vjust = -1.5, size = 5, fontface = "bold",
-            show.legend = FALSE) +
-  scale_x_log10(labels = scales::scientific) +
-  scale_color_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5", 
-                                 "Aging" = "#00A087")) +
-  scale_size_continuous(range = c(8, 15), name = "Non-zero SNPs",
-                        labels = scales::comma) +
-  labs(title = "Genetic Architecture: EOAD vs LOAD vs Aging",
-       subtitle = "LDpred2-auto estimates",
-       x = "Polygenicity (p, log scale)",
-       y = "SNP Heritability (h²)") +
-  theme_nc
+  # 11.1 Filter APOE SNPs from GWAS data
+  df_beta_eoad_noAPOE <- df_beta_eoad[
+    !(df_beta_eoad$chr == apoe_chr &
+      df_beta_eoad$pos >= apoe_start &
+      df_beta_eoad$pos <= apoe_end), ]
 
-ggsave("results/figures/Figure_Genetic_Architecture.pdf", p_architecture, 
-       width = 10, height = 8, dpi = 300)
+  df_beta_load_noAPOE <- df_beta_load[
+    !(df_beta_load$chr == apoe_chr &
+      df_beta_load$pos >= apoe_start &
+      df_beta_load$pos <= apoe_end), ]
 
-## Section 9.2: Cellular Origin Map
-calculate_pathway_burden <- function(pw, fw) {
-  ps <- sum(abs(pw), na.rm = TRUE)
-  fs <- sum(abs(fw), na.rm = TRUE)
-  if (fs == 0) return(0)
-  return(ps / fs * 100)
-}
+  cat(sprintf("  EOAD: removed %d APOE SNPs (remaining %d)\n",
+              nrow(df_beta_eoad) - nrow(df_beta_eoad_noAPOE),
+              nrow(df_beta_eoad_noAPOE)))
+  cat(sprintf("  LOAD: removed %d APOE SNPs (remaining %d)\n",
+              nrow(df_beta_load) - nrow(df_beta_load_noAPOE),
+              nrow(df_beta_load_noAPOE)))
 
-cellular_origin_data <- data.frame(
-  GWAS = rep(c("EOAD", "LOAD"), each = 6),
-  Pathway = factor(rep(c("T-Cell", "Microglia", "Aβ Clearance", 
-                         "APP Metabolism", "Oligodendrocyte", "Myelination"), 2),
-                   levels = c("T-Cell", "Microglia", "Aβ Clearance", 
-                              "APP Metabolism", "Oligodendrocyte", "Myelination")),
-  Burden = c(
-    calculate_pathway_burden(pathway_weights$eoad_TCell$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$eoad_Microglia$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$eoad_Abeta$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$eoad_APP$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$eoad_Oligo$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$eoad_Myelin$weights, eoad_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_TCell$weights, load_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_Microglia$weights, load_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_Abeta$weights, load_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_APP$weights, load_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_Oligo$weights, load_ldpred2$beta_bagged),
-    calculate_pathway_burden(pathway_weights$load_Myelin$weights, load_ldpred2$beta_bagged)
+  # 11.2 Subset Chr19 LD matrix to exclude APOE local indices
+  apoe_idx_in_map <- which(map_ldref$chr == apoe_chr &
+                           map_ldref$pos >= apoe_start &
+                           map_ldref$pos <= apoe_end)
+
+  corr_noAPOE <- corr_list
+  if (!is.null(corr_list[[19]])) {
+    chr19_start <- sum(sapply(corr_list[1:18],
+                              function(x) if (!is.null(x)) nrow(x) else 0L)) + 1L
+    chr19_end   <- chr19_start + nrow(corr_list[[19]]) - 1L
+
+    apoe_local <- apoe_idx_in_map[apoe_idx_in_map >= chr19_start &
+                                  apoe_idx_in_map <= chr19_end] - chr19_start + 1L
+    if (length(apoe_local) > 0) {
+      keep_idx <- setdiff(1:nrow(corr_list[[19]]), apoe_local)
+      corr_noAPOE[[19]] <- corr_list[[19]][keep_idx, keep_idx]
+      cat(sprintf("  Chr19 LD: %d -> %d SNPs\n",
+                  nrow(corr_list[[19]]), nrow(corr_noAPOE[[19]])))
+    }
+  }
+
+  # 11.3 Re-run LDpred2-auto
+  eoad_noAPOE <- run_ldpred2_auto_by_chr(
+    df_beta_input = df_beta_eoad_noAPOE, corr_list = corr_noAPOE,
+    map_ldref = map_ldref, trait_name = "EOAD_noAPOE"
   )
-)
 
-p_cellular_origin <- ggplot(cellular_origin_data, 
-                             aes(x = Pathway, y = Burden, fill = GWAS)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), 
-           width = 0.7, alpha = 0.9) +
-  geom_text(aes(label = sprintf("%.1f%%", Burden)),
-            position = position_dodge(width = 0.8), vjust = -0.5, size = 3) +
-  scale_fill_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5")) +
-  labs(title = "Cellular Origin Map: EOAD vs LOAD",
-       subtitle = "Pathway-specific genetic burden",
-       x = "", y = "Pathway Genetic Burden (%)") +
-  theme_nc +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "top")
-
-ggsave("results/figures/Figure_Cellular_Origin_Map.pdf", p_cellular_origin, 
-       width = 12, height = 8, dpi = 300)
-
-## Section 9.3: APOE Sensitivity Analysis
-apoe_check_data <- rbind(
-  data.frame(GWAS = "EOAD", Pathway = "Microglia", Scenario = "Full",
-             Burden = calculate_pathway_burden(pathway_weights$eoad_Microglia$weights, 
-                                                eoad_ldpred2$beta_bagged)),
-  data.frame(GWAS = "EOAD", Pathway = "Microglia", Scenario = "noAPOE",
-             Burden = calculate_pathway_burden(pathway_weights$eoad_Microglia$weights, 
-                                                eoad_weights_noAPOE)),
-  data.frame(GWAS = "LOAD", Pathway = "Microglia", Scenario = "Full",
-             Burden = calculate_pathway_burden(pathway_weights$load_Microglia$weights, 
-                                                load_ldpred2$beta_bagged)),
-  data.frame(GWAS = "LOAD", Pathway = "Microglia", Scenario = "noAPOE",
-             Burden = calculate_pathway_burden(pathway_weights$load_Microglia$weights, 
-                                                load_weights_noAPOE)),
-  data.frame(GWAS = "EOAD", Pathway = "Oligodendrocyte", Scenario = "Full",
-             Burden = calculate_pathway_burden(pathway_weights$eoad_Oligo$weights, 
-                                                eoad_ldpred2$beta_bagged)),
-  data.frame(GWAS = "EOAD", Pathway = "Oligodendrocyte", Scenario = "noAPOE",
-             Burden = calculate_pathway_burden(pathway_weights$eoad_Oligo$weights, 
-                                                eoad_weights_noAPOE)),
-  data.frame(GWAS = "LOAD", Pathway = "Oligodendrocyte", Scenario = "Full",
-             Burden = calculate_pathway_burden(pathway_weights$load_Oligo$weights, 
-                                                load_ldpred2$beta_bagged)),
-  data.frame(GWAS = "LOAD", Pathway = "Oligodendrocyte", Scenario = "noAPOE",
-             Burden = calculate_pathway_burden(pathway_weights$load_Oligo$weights, 
-                                                load_weights_noAPOE))
-)
-
-apoe_check_data$Scenario <- factor(apoe_check_data$Scenario, 
-                                    levels = c("Full", "noAPOE"))
-
-p_apoe_sensitivity <- ggplot(apoe_check_data, 
-                              aes(x = GWAS, y = Burden, fill = Scenario)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), 
-           width = 0.7, alpha = 0.9) +
-  facet_wrap(~ Pathway, scales = "free_y") +
-  scale_fill_manual(values = c("Full" = "#E41A1C", "noAPOE" = "#377EB8"),
-                    labels = c("Full PRS", "Excluding APOE")) +
-  geom_text(aes(label = sprintf("%.2f%%", Burden)), 
-            position = position_dodge(width = 0.8), vjust = -0.5, 
-            size = 3.5, fontface = "bold") +
-  labs(title = "Sensitivity Analysis: Impact of APOE Locus on Pathway Burden",
-       subtitle = "EOAD Microglia burden is APOE-driven; LOAD shows distributed architecture",
-       y = "Pathway Genetic Burden (%)", x = "", fill = "PRS Version",
-       caption = "APOE region: Chr19:44-46Mb (GRCh37)") +
-  theme_nc +
-  theme(legend.position = "top", strip.text = element_text(face = "bold", size = 11))
-
-ggsave("results/figures/Figure_APOE_Sensitivity_Validation.pdf", 
-       p_apoe_sensitivity, width = 10, height = 6, dpi = 300)
-
-# ==============================================================================
-# Part 10: Results Summary
-# ==============================================================================
-
-## Section 10.1: LDpred2 Results Summary
-results_summary <- data.frame(
-  Trait = c("EOAD", "LOAD", "Aging"),
-  GWAS_Source = c("FinnGen R11", "Bellenguez 2022", "Timmers 2020"),
-  N_Cases = c(1573, 85934, NA),
-  N_Controls = c(199505, 401577, NA),
-  N_Total = c(201078, 487511, 752566),
-  N_SNPs_Matched = c(nrow(df_beta_eoad), nrow(df_beta_load), nrow(df_beta_aging)),
-  h2_LDpred2 = c(eoad_ldpred2$h2_bagged, load_ldpred2$h2_bagged, 
-                 aging_ldpred2$h2_bagged),
-  p_LDpred2 = c(eoad_ldpred2$p_bagged, load_ldpred2$p_bagged, 
-                aging_ldpred2$p_bagged),
-  N_Chains_Converged = c(eoad_ldpred2$n_converged, load_ldpred2$n_converged, 
-                         aging_ldpred2$n_converged)
-)
-
-fwrite(results_summary, "results/tables/Table_LDpred2_Results_Summary.csv")
-
-## Section 10.2: Pathway Summary
-pathway_summary <- data.frame(
-  GWAS = rep(c("EOAD", "LOAD"), each = length(pathway_gene_lists)),
-  Pathway = rep(names(pathway_gene_lists), 2),
-  N_Genes = rep(sapply(pathway_gene_lists, length), 2),
-  N_SNPs = c(
-    sapply(names(pathway_gene_lists), function(p) 
-      pathway_weights[[paste0("eoad_", p)]]$n_snps),
-    sapply(names(pathway_gene_lists), function(p) 
-      pathway_weights[[paste0("load_", p)]]$n_snps)
-  ),
-  N_NonZero = c(
-    sapply(names(pathway_gene_lists), function(p) 
-      pathway_weights[[paste0("eoad_", p)]]$n_nonzero),
-    sapply(names(pathway_gene_lists), function(p) 
-      pathway_weights[[paste0("load_", p)]]$n_nonzero)
+  load_noAPOE <- run_ldpred2_auto_by_chr(
+    df_beta_input = df_beta_load_noAPOE, corr_list = corr_noAPOE,
+    map_ldref = map_ldref, trait_name = "LOAD_noAPOE"
   )
-)
 
-fwrite(pathway_summary, "results/tables/Table_Pathway_Specific_PRS_Summary.csv")
-fwrite(cellular_origin_data, "results/tables/Table_Cellular_Origin_Burden.csv")
+  # 11.4 Comparison table
+  comparison <- data.frame(
+    Trait   = rep(c("EOAD", "LOAD"), each = 2),
+    Version = rep(c("Full", "Excluding APOE"), 2),
+    h2 = c(eoad_ldpred2$h2_bagged, eoad_noAPOE$h2_bagged,
+           load_ldpred2$h2_bagged, load_noAPOE$h2_bagged),
+    p  = c(eoad_ldpred2$p_bagged, eoad_noAPOE$p_bagged,
+           load_ldpred2$p_bagged, load_noAPOE$p_bagged),
+    stringsAsFactors = FALSE
+  )
 
-## Section 10.3: Print Summary
-cat("\n")
-cat(rep("=", 80), "\n", sep="")
-cat("  PRS Construction using LDpred2-auto - COMPLETE\n")
-cat(rep("=", 80), "\n", sep="")
+  # APOE contribution percentage
+  eoad_contrib <- (eoad_ldpred2$h2_bagged - eoad_noAPOE$h2_bagged) /
+                   eoad_ldpred2$h2_bagged * 100
+  load_contrib <- (load_ldpred2$h2_bagged - load_noAPOE$h2_bagged) /
+                   load_ldpred2$h2_bagged * 100
 
-cat("\nLDpred2 Results:\n")
-print(results_summary[, c("Trait", "N_SNPs_Matched", "h2_LDpred2", 
-                          "p_LDpred2", "N_Chains_Converged")])
+  comparison$APOE_Contribution_Pct <- c(
+    sprintf("%.1f%%", eoad_contrib), NA,
+    sprintf("%.1f%%", load_contrib), NA
+  )
 
-cat("\nPathway Gene Counts:\n")
-for (pw in names(pathway_gene_lists)) {
-  cat("  ", pw, ":", length(pathway_gene_lists[[pw]]), "genes\n")
+  cat("\n  Heritability comparison:\n")
+  print(comparison)
+
+  fwrite(comparison, file.path(output_dir, "Table_h2_Full_vs_noAPOE.csv"))
+  cat("  Saved: Table_h2_Full_vs_noAPOE.csv\n")
+
+  # 11.5 Visualization
+  plot_apoe_sensitivity(comparison,
+                        file.path(output_dir, "Figure_h2_APOE_Sensitivity.pdf"))
+
+  return(list(
+    eoad_noAPOE = eoad_noAPOE,
+    load_noAPOE = load_noAPOE,
+    comparison  = comparison
+  ))
 }
 
+
 # ==============================================================================
-# Part 11: APOE Sensitivity Analysis
+# 12. MAIN EXECUTION WRAPPER
 # ==============================================================================
 
-cat("\n", rep("=", 80), "\n", sep="")
-cat("Part 11: APOE Sensitivity Analysis\n")
-cat(rep("=", 80), "\n", sep="")
+# Orchestrates the full PRS analysis pipeline.
+# All file paths are passed as parameters (no hardcoded paths).
+run_prs_analysis <- function(eoad_gwas_file, load_gwas_file, aging_gwas_file,
+                             ldref_dir, output_dir,
+                             eoad_n_case = 1573, eoad_n_control = 199505,
+                             load_n_case = 85934, load_n_control = 401577,
+                             aging_n_total = 752566,
+                             eoad_chr_col = "CHR", eoad_pos_col = "BP",
+                             eoad_a1_col = "A1", eoad_a2_col = "A2",
+                             eoad_beta_col = "BETA", eoad_se_col = "SE",
+                             eoad_snp_col = "SNP",
+                             load_chr_col = "CHR", load_pos_col = "BP",
+                             load_a1_col = "A1", load_a2_col = "A2",
+                             load_beta_col = "BETA", load_se_col = "SE",
+                             load_snp_col = "SNP",
+                             aging_chr_col = "CHR", aging_pos_col = "BP",
+                             aging_a1_col = "A1", aging_a2_col = "A2",
+                             aging_beta_col = "BETA", aging_se_col = "SE",
+                             aging_snp_col = "SNP",
+                             run_apoe_sensitivity_flag = TRUE) {
 
-## Section 11.1: Prepare APOE-Excluded GWAS Data
+  figures_dir <- file.path(output_dir, "figures")
+  tables_dir  <- file.path(output_dir, "tables")
+  weights_dir <- file.path(output_dir, "weights")
+  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(tables_dir,  recursive = TRUE, showWarnings = FALSE)
+  dir.create(weights_dir, recursive = TRUE, showWarnings = FALSE)
 
-apoe_chr <- 19
-apoe_start <- 44000000
-apoe_end <- 46000000
+  cat("=== PRS Analysis Pipeline ===\n\n")
 
-df_beta_eoad_noAPOE <- df_beta_eoad %>%
-  filter(!(chr == apoe_chr & pos >= apoe_start & pos <= apoe_end))
+  # Step 1: Format GWAS
+  cat("Step 1: Formatting GWAS summary statistics\n")
+  gwas_eoad <- format_gwas_ldpred2(eoad_gwas_file, n_case = eoad_n_case,
+    n_control = eoad_n_control, trait_type = "binary",
+    chr_col = eoad_chr_col, pos_col = eoad_pos_col,
+    a1_col = eoad_a1_col, a2_col = eoad_a2_col,
+    beta_col = eoad_beta_col, se_col = eoad_se_col, snp_col = eoad_snp_col)
 
-df_beta_load_noAPOE <- df_beta_load %>%
-  filter(!(chr == apoe_chr & pos >= apoe_start & pos <= apoe_end))
+  gwas_load <- format_gwas_ldpred2(load_gwas_file, n_case = load_n_case,
+    n_control = load_n_control, trait_type = "binary",
+    chr_col = load_chr_col, pos_col = load_pos_col,
+    a1_col = load_a1_col, a2_col = load_a2_col,
+    beta_col = load_beta_col, se_col = load_se_col, snp_col = load_snp_col)
 
-cat(sprintf("EOAD: Removed %d APOE SNPs (remaining %d)\n", 
-            nrow(df_beta_eoad) - nrow(df_beta_eoad_noAPOE),
-            nrow(df_beta_eoad_noAPOE)))
-cat(sprintf("LOAD: Removed %d APOE SNPs (remaining %d)\n", 
-            nrow(df_beta_load) - nrow(df_beta_load_noAPOE),
-            nrow(df_beta_load_noAPOE)))
+  gwas_aging <- format_gwas_ldpred2(aging_gwas_file, n_total = aging_n_total,
+    trait_type = "continuous",
+    chr_col = aging_chr_col, pos_col = aging_pos_col,
+    a1_col = aging_a1_col, a2_col = aging_a2_col,
+    beta_col = aging_beta_col, se_col = aging_se_col, snp_col = aging_snp_col)
 
-## Section 11.2: Prepare APOE-Excluded LD Matrix
+  # Step 2: Load LD reference
+  cat("\nStep 2: Loading LD reference\n")
+  ldref <- load_ld_reference(ldref_dir)
+  map_ldref <- ldref$map
+  corr      <- ldref$corr
 
-apoe_idx_in_map <- which(map_ldref$chr == apoe_chr & 
-                         map_ldref$pos >= apoe_start & 
-                         map_ldref$pos <= apoe_end)
+  # Step 3: SNP matching
+  cat("\nStep 3: Matching SNPs to LD reference\n")
+  df_beta_eoad  <- match_snps_to_reference(gwas_eoad, map_ldref)
+  df_beta_load  <- match_snps_to_reference(gwas_load, map_ldref)
+  df_beta_aging <- match_snps_to_reference(gwas_aging, map_ldref)
 
-cat(sprintf("APOE region SNPs in LD reference: %d\n", length(apoe_idx_in_map)))
+  # Step 4: LDpred2-auto
+  cat("\nStep 4: Running LDpred2-auto with chain bagging\n")
+  eoad_ldpred2  <- run_ldpred2_auto_by_chr(df_beta_eoad, corr, map_ldref, "EOAD")
+  load_ldpred2  <- run_ldpred2_auto_by_chr(df_beta_load, corr, map_ldref, "LOAD")
+  aging_ldpred2 <- run_ldpred2_auto_by_chr(df_beta_aging, corr, map_ldref, "Aging")
 
-corr_noAPOE <- corr
+  # Step 5: APOE-masked weights
+  cat("\nStep 5: Generating APOE-masked weights\n")
+  eoad_noAPOE_weights <- mask_apoe_weights(eoad_ldpred2$beta_bagged, df_beta_eoad)
+  load_noAPOE_weights <- mask_apoe_weights(load_ldpred2$beta_bagged, df_beta_load)
 
-chr_to_process <- 19
-if (!is.null(corr[[chr_to_process]])) {
-  if (chr_to_process == 1) {
-    chr_start_idx <- 1
-  } else {
-    chr_start_idx <- sum(sapply(corr[1:(chr_to_process-1)], 
-                                function(x) if(!is.null(x)) nrow(x) else 0)) + 1
+  # Step 6-7: Pathway-specific PRS
+  cat("\nStep 6-7: Generating pathway-specific PRS weights\n")
+  pathway_genes <- define_pathway_genes()
+  pw <- list()
+
+  for (trait_label in c("EOAD", "LOAD")) {
+    if (trait_label == "EOAD") {
+      full_w <- eoad_ldpred2$beta_bagged; snp_df <- df_beta_eoad
+    } else {
+      full_w <- load_ldpred2$beta_bagged; snp_df <- df_beta_load
+    }
+    for (pw_name in names(pathway_genes)) {
+      key <- paste0(tolower(trait_label), "_", pw_name)
+      pw[[key]] <- generate_pathway_weights(full_w, snp_df,
+                                            pathway_genes[[pw_name]],
+                                            paste(trait_label, pw_name))
+    }
   }
-  
-  chr_end_idx <- chr_start_idx + nrow(corr[[chr_to_process]]) - 1
-  
-  apoe_local_idx <- apoe_idx_in_map[apoe_idx_in_map >= chr_start_idx & 
-                                    apoe_idx_in_map <= chr_end_idx] - chr_start_idx + 1
-  
-  if (length(apoe_local_idx) > 0) {
-    keep_idx <- setdiff(1:nrow(corr[[chr_to_process]]), apoe_local_idx)
-    corr_noAPOE[[chr_to_process]] <- corr[[chr_to_process]][keep_idx, keep_idx]
-    
-    cat(sprintf("Chr%d LD matrix: %d -> %d SNPs (removed %d)\n",
-                chr_to_process, nrow(corr[[chr_to_process]]), 
-                nrow(corr_noAPOE[[chr_to_process]]), length(apoe_local_idx)))
+
+  # Step 8: Export weights
+  cat("\nStep 8: Exporting PRS weights\n")
+  export_weights(df_beta_eoad, eoad_ldpred2$beta_bagged,
+                 file.path(weights_dir, "EOAD_PRS_weights_full.txt"))
+  export_weights(df_beta_eoad, eoad_noAPOE_weights,
+                 file.path(weights_dir, "EOAD_PRS_weights_noAPOE.txt"))
+  export_weights(df_beta_load, load_ldpred2$beta_bagged,
+                 file.path(weights_dir, "LOAD_PRS_weights_full.txt"))
+  export_weights(df_beta_load, load_noAPOE_weights,
+                 file.path(weights_dir, "LOAD_PRS_weights_noAPOE.txt"))
+  export_weights(df_beta_aging, aging_ldpred2$beta_bagged,
+                 file.path(weights_dir, "Aging_PRS_weights_full.txt"))
+
+  for (trait_label in c("EOAD", "LOAD")) {
+    snp_df <- if (trait_label == "EOAD") df_beta_eoad else df_beta_load
+    for (pw_name in names(pathway_genes)) {
+      key <- paste0(tolower(trait_label), "_", pw_name)
+      export_weights(snp_df, pw[[key]]$weights,
+                     file.path(weights_dir,
+                               paste0(trait_label, "_PRS_weights_", pw_name, ".txt")))
+    }
   }
+
+  # Step 9: Visualization
+  cat("\nStep 9: Generating visualizations\n")
+  plot_genetic_architecture(
+    list(eoad_ldpred2, load_ldpred2, aging_ldpred2),
+    file.path(figures_dir, "Figure_Genetic_Architecture.pdf"))
+
+  plot_cellular_origin(
+    pw, list(eoad_ldpred2$beta_bagged, load_ldpred2$beta_bagged),
+    names(pathway_genes), c("EOAD", "LOAD"),
+    file.path(figures_dir, "Figure_Cellular_Origin_Burden.pdf"))
+
+  # Step 10: Results tables
+  cat("\nStep 10: Generating results tables\n")
+  generate_results_tables(
+    list(eoad_ldpred2, load_ldpred2, aging_ldpred2),
+    list(df_beta_eoad, df_beta_load, df_beta_aging),
+    pw, pathway_genes, tables_dir)
+
+  # Step 11: APOE sensitivity (optional)
+  apoe_result <- NULL
+  if (run_apoe_sensitivity_flag) {
+    cat("\nStep 11: APOE sensitivity analysis\n")
+    apoe_result <- run_apoe_sensitivity(
+      df_beta_eoad, df_beta_load, corr, map_ldref,
+      eoad_ldpred2, load_ldpred2, output_dir)
+  }
+
+  # Save full environment
+  saveRDS(list(
+    eoad = eoad_ldpred2, load = load_ldpred2, aging = aging_ldpred2,
+    pathway_weights = pw, pathway_genes = pathway_genes,
+    apoe_sensitivity = apoe_result
+  ), file.path(output_dir, "PRS_analysis_results.rds"))
+
+  cat("\n=== PRS Analysis Complete ===\n")
+  cat("Output directory:", output_dir, "\n")
+  cat("Timestamp:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
+  sessionInfo()
 }
 
-## Section 11.3: Re-run LDpred2-auto (Excluding APOE)
 
-cat("\nRe-running LDpred2-auto (excluding APOE)...\n")
+# ==============================================================================
+# 13. EXAMPLE USAGE
+# ==============================================================================
 
-eoad_ldpred2_noAPOE <- run_ldpred2_auto_by_chr(
-  df_beta = df_beta_eoad_noAPOE,
-  corr_list = corr_noAPOE,
-  map_ldref = map_ldref,
-  trait_name = "EOAD_noAPOE",
-  h2_init = 0.1,
-  n_chains = 30,
-  burn_in = 500,
-  num_iter = 500
-)
-
-load_ldpred2_noAPOE <- run_ldpred2_auto_by_chr(
-  df_beta = df_beta_load_noAPOE,
-  corr_list = corr_noAPOE,
-  map_ldref = map_ldref,
-  trait_name = "LOAD_noAPOE",
-  h2_init = 0.1,
-  n_chains = 30,
-  burn_in = 500,
-  num_iter = 500
-)
-
-## Section 11.4: Comparison Analysis
-
-comparison_h2 <- data.frame(
-  Trait = rep(c("EOAD", "LOAD"), each = 2),
-  Version = rep(c("Full", "Excluding APOE"), 2),
-  h2 = c(eoad_ldpred2$h2_bagged,
-         eoad_ldpred2_noAPOE$h2_bagged,
-         load_ldpred2$h2_bagged,
-         load_ldpred2_noAPOE$h2_bagged),
-  p = c(eoad_ldpred2$p_bagged,
-        eoad_ldpred2_noAPOE$p_bagged,
-        load_ldpred2$p_bagged,
-        load_ldpred2_noAPOE$p_bagged)
-)
-
-comparison_h2 <- comparison_h2 %>%
-  group_by(Trait) %>%
-  mutate(
-    h2_change = h2 - h2[Version == "Excluding APOE"],
-    h2_change_pct = (h2 - h2[Version == "Excluding APOE"]) / h2[Version == "Full"] * 100
-  ) %>%
-  ungroup()
-
-cat("\nHeritability Comparison:\n")
-print(comparison_h2)
-
-## Section 11.5: Create Supplementary Table
-
-supp_table_h2_sensitivity <- data.frame(
-  Trait = c("EOAD", "EOAD (Excluding APOE)", "LOAD", "LOAD (Excluding APOE)"),
-  GWAS_Source = c("FinnGen R11", "FinnGen R11", "Bellenguez 2022", "Bellenguez 2022"),
-  N_Cases = c("1,573", "1,573", "85,934", "85,934"),
-  N_Controls = c("199,505", "199,505", "401,577", "401,577"),
-  N_Total = c("201,078", "201,078", "487,511", "487,511"),
-  N_SNPs_Analyzed = c(format(nrow(df_beta_eoad), big.mark = ","),
-                      format(nrow(df_beta_eoad_noAPOE), big.mark = ","),
-                      format(nrow(df_beta_load), big.mark = ","),
-                      format(nrow(df_beta_load_noAPOE), big.mark = ",")),
-  h2_SNP = c(sprintf("%.3f", eoad_ldpred2$h2_bagged),
-             sprintf("%.3f", eoad_ldpred2_noAPOE$h2_bagged),
-             sprintf("%.3f", load_ldpred2$h2_bagged),
-             sprintf("%.3f", load_ldpred2_noAPOE$h2_bagged)),
-  h2_95CI = c(sprintf("%.2f-%.2f", eoad_ldpred2$h2_bagged * 0.92, eoad_ldpred2$h2_bagged * 1.08),
-              sprintf("%.2f-%.2f", eoad_ldpred2_noAPOE$h2_bagged * 0.92, eoad_ldpred2_noAPOE$h2_bagged * 1.08),
-              sprintf("%.2f-%.2f", load_ldpred2$h2_bagged * 0.92, load_ldpred2$h2_bagged * 1.08),
-              sprintf("%.2f-%.2f", load_ldpred2_noAPOE$h2_bagged * 0.92, load_ldpred2_noAPOE$h2_bagged * 1.08)),
-  Polygenicity_p = c(sprintf("%.3f", eoad_ldpred2$p_bagged),
-                     sprintf("%.3f", eoad_ldpred2_noAPOE$p_bagged),
-                     sprintf("%.3f", load_ldpred2$p_bagged),
-                     sprintf("%.3f", load_ldpred2_noAPOE$p_bagged)),
-  stringsAsFactors = FALSE
-)
-
-cat("\n", rep("=", 80), "\n", sep="")
-cat("Part 11 Complete\n")
-cat(rep("=", 80), "\n", sep="")
-
-cat("\nKey Findings:\n")
-cat(sprintf("  EOAD h² (Full):        %.3f\n", eoad_ldpred2$h2_bagged))
-cat(sprintf("  EOAD h² (noAPOE):      %.3f\n", eoad_ldpred2_noAPOE$h2_bagged))
-cat(sprintf("  LOAD h² (Full):        %.3f\n", load_ldpred2$h2_bagged))
-cat(sprintf("  LOAD h² (noAPOE):      %.3f\n\n", load_ldpred2_noAPOE$h2_bagged))
-
-cat("Analysis completed:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
-cat(rep("=", 80), "\n", sep="")
-
-sessionInfo()
-
+# run_prs_analysis(
+#   eoad_gwas_file  = "data/EOAD_GWAS_hg19.txt",
+#   load_gwas_file  = "data/LOAD_GWAS_hg19.txt",
+#   aging_gwas_file = "data/Aging_GWAS_hg19.txt",
+#   ldref_dir       = "data/ldref_hm3_plus",
+#   output_dir      = "results/prs",
+#   eoad_n_case     = 1573,
+#   eoad_n_control  = 199505,
+#   load_n_case     = 85934,
+#   load_n_control  = 401577,
+#   aging_n_total   = 752566
+# )
