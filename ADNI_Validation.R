@@ -1,5764 +1,1692 @@
 # ==============================================================================
-
-# ADNI Independent Cohort Validation Analysis - Part 1
-
+# ADNI Independent Cohort Validation of Pathway-Specific Genetic Risk
 # ==============================================================================
-
-# Purpose: Validate pathway-specific genetic risk in Alzheimer's disease
-
-#          using the ADNI cohort (N=812)
-
-# Key Analyses:
-
-#   1. Age-stratified cohort preparation (<70 vs ≥70 years)
-
-#   2. Pathway-specific PRS calculation
-
-#   3. APOE-stratified PRS-biomarker associations
-
-#   4. Age-stratified MCI conversion analysis (Logistic regression)
-
-#   5. PRS-imaging associations with age interactions
-
-#   6. Unsupervised genetic subtyping (K-means clustering)
-#   7. Regional brain volume analysis
+#
+# Purpose: Validate age-dependent oligodendrocyte pathway genetic risk in
+#          Alzheimer's disease using the ADNI cohort
+#
+# Analyses:
+#   1.  Data loading and cohort preparation (including CSF sTREM2)
+#   2.  APOE-stratified PRS-biomarker associations with dose-response
+#   3.  Longitudinal MCI-to-AD conversion (logistic regression)
+#   4.  PRS-neuroimaging associations with age interactions
+#   5.  Sliding-window age-dependency mapping
+#   6.  Unsupervised genetic subtyping (k-means, k=3)
+#   7.  Regional cortical thickness analysis (68 DK regions)
+#   8.  Subcortical structure analysis (thalamus, putamen, etc.)
+#   9.  Cross-sectional PRS-cognition analysis
+#   10. Pathway enrichment comparison (microglia vs Abeta clearance)
+#   11. Exploratory boundary condition analyses
+#   12. Demographics table
+#   13. Visualization functions
+#   14. Main execution script
+#
+# Data requirements:
+#   - ADNIMERGE clinical data (longitudinal, all visits)
+#   - Pathway-specific PRS (LDpred2-derived)
+#   - FreeSurfer regional measures (UCSFFSX51)
+#   - CSF biomarkers (AlzBio3 / sTREM2)
 #
 # ==============================================================================
-
-# FreeSurfer Variable Reference:
-#   https://adni.bitbucket.io/reference/ucsffsx51.html
-# ==============================================================================
-# Environment Setup
-# ==============================================================================
-
 
 suppressPackageStartupMessages({
   library(data.table)
   library(dplyr)
   library(tidyr)
   library(ggplot2)
-  library(survival)
-  library(survminer)
   library(broom)
   library(cluster)
+  library(sandwich)
+  library(lmtest)
+  library(cowplot)
+  library(viridis)
+  library(RColorBrewer)
+  library(pheatmap)
 })
 
 
+# ==============================================================================
+# UTILITY: Detect longitudinal month and diagnosis columns in ADNIMERGE
+# ==============================================================================
 
-required_pkgs <- c("sandwich", "lmtest", "emmeans", "car", "pheatmap", 
-
-                   "RColorBrewer", "viridis", "cowplot")
-
-for (pkg in required_pkgs) {
-
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-
-    install.packages(pkg, quiet = TRUE)
-
+detect_month_col <- function(df) {
+  # ADNIMERGE versions use M, Month, MONTH, or Month_bl
+  candidates <- c("M", "Month", "MONTH", "Month_bl")
+  found <- intersect(candidates, colnames(df))
+  if (length(found) == 0) {
+    # Fallback: look for any column containing "month" (case-insensitive)
+    found <- grep("month", colnames(df), ignore.case = TRUE, value = TRUE)
   }
+  if (length(found) == 0) stop("Cannot find month column in ADNIMERGE longitudinal data")
+  return(found[1])
+}
 
-  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+detect_dx_col <- function(df) {
+  # Longitudinal diagnosis: DX, DXCHANGE, DX.bl, DX_bl
+  if ("DX" %in% colnames(df)) return("DX")
+  if ("DXCHANGE" %in% colnames(df)) return("DXCHANGE")
+  stop("Cannot find longitudinal diagnosis column (DX or DXCHANGE) in ADNIMERGE")
+}
 
+detect_dx_bl_col <- function(df) {
+  if ("DX.bl" %in% colnames(df)) return("DX.bl")
+  if ("DX_bl" %in% colnames(df)) return("DX_bl")
+  stop("Cannot find baseline diagnosis column (DX.bl or DX_bl)")
+}
+
+# Map DXCHANGE numeric codes to text labels if needed
+map_dx_to_dementia <- function(dx_values, col_name) {
+  if (col_name == "DXCHANGE") {
+    # DXCHANGE: 4 = MCI to Dementia, 5 = CN to Dementia, 6 = Dementia
+    return(dx_values %in% c(4, 5, 6))
+  }
+  # Text-based DX column
+  return(dx_values %in% c("Dementia", "AD", "Alzheimer's Disease"))
 }
 
 
-
-cat("All packages loaded successfully\n")
-
-
-
+# ==============================================================================
+# 1. DATA LOADING AND INTEGRATION
 # ==============================================================================
 
-# Data Loading and Integration
+load_adni_data <- function(clinical_file, prs_file, mri_file,
+                           csf_file, strem2_file = NULL) {
 
-# ==============================================================================
-
-
-
-cat("\n=== Data Loading ===\n")
-
-
-
-load_adni_data <- function(clinical_file, prs_file, mri_file = NULL) {
-
-  
-
-  # Load PRS data
-
-  if (!file.exists(prs_file)) {
-
-    stop("PRS file not found. Please run PRS calculation first.")
-
-  }
-
+  # PRS data
   adni_prs <- fread(prs_file)
-
-  cat("PRS samples:", nrow(adni_prs), "\n")
-
-  
-
-  # Ensure ID columns
-
-  if (!"PTID" %in% colnames(adni_prs) && "IID" %in% colnames(adni_prs)) {
-
-    adni_prs$PTID <- adni_prs$IID
-
-  }
-
   if (!"RID" %in% colnames(adni_prs) && "PTID" %in% colnames(adni_prs)) {
-
     adni_prs$RID <- as.numeric(gsub(".*_S_0*", "", adni_prs$PTID))
-
   }
 
-  
-
-  # Load clinical data
-
-  if (!file.exists(clinical_file)) {
-
-    stop("Clinical data file not found")
-
-  }
-
+  # Full longitudinal ADNIMERGE (needed for conversion tracking)
   adnimerge <- fread(clinical_file)
 
-  cat("ADNIMERGE rows:", nrow(adnimerge), "\n")
+  # Baseline clinical data
+  clin_bl <- adnimerge[VISCODE == "bl"]
+  clin_bl <- clin_bl[!duplicated(clin_bl$RID)]
 
-  
+  # Normalize baseline DX column
+  dx_bl <- detect_dx_bl_col(clin_bl)
+  if (dx_bl != "DX.bl") clin_bl[, DX.bl := get(dx_bl)]
 
-  # Extract baseline data
+  merged <- merge(adni_prs, clin_bl, by = "RID", all.x = TRUE)
 
-  clin_bl <- as.data.frame(adnimerge[adnimerge$VISCODE == "bl", ])
+  # FreeSurfer MRI
+  mri_st <- fread(mri_file)
+  mri_bl <- mri_st[VISCODE %in% c("bl", "sc")]
+  mri_bl <- mri_bl[!duplicated(mri_bl$RID)]
+  st_cols <- c("RID", grep("^ST", colnames(mri_bl), value = TRUE))
+  merged <- merge(merged, mri_bl[, ..st_cols], by = "RID", all.x = TRUE)
 
-  key_cols <- c("PTID", "RID", "AGE", "PTGENDER", "APOE4", "DX_bl", "DX", 
+  # CSF biomarkers (AlzBio3)
+  csf <- fread(csf_file)
+  csf_bl <- csf[!duplicated(csf$RID)]
+  csf_merge_cols <- intersect(c("RID", "ABETA", "TAU", "PTAU"), colnames(csf_bl))
+  merged <- merge(merged, csf_bl[, ..csf_merge_cols], by = "RID", all.x = TRUE)
 
-                "MMSE", "CDRSB", "ADAS11", "ADAS13", "PTEDUCAT",
-
-                "Hippocampus", "Ventricles", "WholeBrain", "ICV", 
-
-                "Entorhinal", "MidTemp", "FDG")
-
-  available_cols <- key_cols[key_cols %in% colnames(clin_bl)]
-
-  clin_bl_subset <- clin_bl[!duplicated(clin_bl$RID), available_cols]
-
-  
-
-  # Merge data
-
-  merged_data <- merge(as.data.frame(adni_prs), clin_bl_subset, 
-
-                       by = "RID", all.x = TRUE)
-
-  cat("Merged samples:", nrow(merged_data), "\n")
-
-  
-
-  # Load FreeSurfer data if available
-
-  if (!is.null(mri_file) && file.exists(mri_file)) {
-
-    mri_st <- fread(mri_file)
-
-    if ("VISCODE" %in% colnames(mri_st)) {
-
-      mri_st_bl <- mri_st[mri_st$VISCODE %in% c("bl", "sc"), ]
-
-    } else {
-
-      mri_st_bl <- mri_st
-
+  # CSF sTREM2 (separate file if available)
+  if (!is.null(strem2_file) && file.exists(strem2_file)) {
+    strem2 <- fread(strem2_file)
+    strem2_bl <- strem2[!duplicated(strem2$RID)]
+    strem2_col <- grep("STREM2|sTREM2|strem2", colnames(strem2_bl), value = TRUE)
+    if (length(strem2_col) > 0) {
+      strem2_bl$STREM2 <- as.numeric(strem2_bl[[strem2_col[1]]])
+      merged <- merge(merged, strem2_bl[, .(RID, STREM2)],
+                      by = "RID", all.x = TRUE)
     }
-
-    if ("RID" %in% colnames(mri_st_bl)) {
-
-      mri_st_bl <- mri_st_bl[!duplicated(mri_st_bl$RID), ]
-
-      st_cols <- c("RID", grep("^ST", colnames(mri_st_bl), value = TRUE))
-
-      st_cols <- st_cols[st_cols %in% colnames(mri_st_bl)]
-
-      if (length(st_cols) > 1) {
-
-        merged_data <- merge(merged_data, 
-
-                            as.data.frame(mri_st_bl)[, st_cols, drop = FALSE], 
-
-                            by = "RID", all.x = TRUE)
-
-        cat("FreeSurfer data merged\n")
-
-      }
-
-    }
-
   }
 
-  
+  # Attach longitudinal data for conversion tracking
+  attr(merged, "adnimerge_long") <- adnimerge
 
-  # Load CSF data
-
-  csf_file <- gsub("Clinical/ADNIMERGE.*", "Biomarkers/CSF_Ab_Tau_Alzbio3.csv", 
-
-                   clinical_file)
-
-  if (file.exists(csf_file)) {
-
-    raw_csf <- fread(csf_file)
-
-    if ("RID" %in% colnames(raw_csf)) {
-
-      csf_cols <- c("RID", grep("ABETA|^TAU$|PTAU|STREM2", 
-
-                                colnames(raw_csf), value = TRUE, ignore.case = TRUE))
-
-      csf_cols <- unique(csf_cols[csf_cols %in% colnames(raw_csf)])
-
-      if (length(csf_cols) > 1) {
-
-        csf_subset <- as.data.frame(raw_csf)[, csf_cols[1:min(5, length(csf_cols))], 
-
-                                             drop = FALSE]
-
-        colnames(csf_subset) <- c("RID", "CSF_ABETA42", "CSF_TAU", "CSF_PTAU", 
-
-                                  "CSF_STREM2")[1:ncol(csf_subset)]
-
-        csf_subset$RID <- as.numeric(csf_subset$RID)
-
-        for (col in colnames(csf_subset)[-1]) {
-
-          csf_subset[[col]] <- as.numeric(gsub("[^0-9.]", "", csf_subset[[col]]))
-
-        }
-
-        csf_subset <- csf_subset[!duplicated(csf_subset$RID), ]
-
-        merged_data <- merge(merged_data, csf_subset, by = "RID", all.x = TRUE)
-
-        cat("CSF data merged: N =", sum(!is.na(merged_data$CSF_ABETA42)), "\n")
-
-      }
-
-    }
-
-  }
-
-  
-
-  return(merged_data)
-
+  return(as.data.frame(merged))
 }
-
-
-
-# ==============================================================================
-
-# Create Derived Variables
-
-# ==============================================================================
-
-
 
 create_derived_variables <- function(data) {
 
-  
+  data$Age_Group <- factor(
+    ifelse(data$AGE < 70, "Younger", "Older"),
+    levels = c("Younger", "Older")
+  )
+  data$Age_Centered <- data$AGE - 70
 
-  # Age stratification (primary: 70 years)
+  data$APOE_Group <- factor(
+    ifelse(data$APOE4 == 2, "e4/e4",
+           ifelse(data$APOE4 == 1, "e4 heterozygote", "Non-carrier")),
+    levels = c("Non-carrier", "e4 heterozygote", "e4/e4")
+  )
 
-  if ("AGE" %in% colnames(data)) {
+  icv <- data$ST10CV
+  data$WMH_Log        <- log(data$ST128SV + 1)
+  data$Hippo_Norm      <- (data$ST29SV + data$ST88SV) / icv * 1000
+  data$Ventricle_Norm  <- (data$ST37SV + data$ST96SV) / icv * 1000
+  data$Entorhinal_Norm <- (data$ST24CV + data$ST83CV) / icv * 1000
 
-    data$Age_Group_70 <- factor(
-
-      ifelse(data$AGE < 70, "Younger (<70)", "Older (≥70)"),
-
-      levels = c("Younger (<70)", "Older (≥70)")
-
-    )
-
-    
-
-    # Stricter EOAD definition (65 years)
-
-    data$Age_Group_65 <- factor(
-
-      ifelse(data$AGE < 65, "EOAD (<65)", 
-
-             ifelse(data$AGE < 75, "Intermediate (65-74)", "LOAD (≥75)")),
-
-      levels = c("EOAD (<65)", "Intermediate (65-74)", "LOAD (≥75)")
-
-    )
-
-    
-
-    # Centered age for interaction models
-
-    data$Age_Centered <- data$AGE - 70
-
-    
-
-    cat("Age stratification created:\n")
-
-    cat("  <70 years:", sum(data$Age_Group_70 == "Younger (<70)", na.rm = TRUE), "\n")
-
-    cat("  ≥70 years:", sum(data$Age_Group_70 == "Older (≥70)", na.rm = TRUE), "\n")
-
-  }
-
-  
-
-  # APOE stratification
-
-  if ("APOE4" %in% colnames(data)) {
-
-    data$APOE4_Status <- factor(
-
-      ifelse(data$APOE4 > 0, "APOE4+", "APOE4-"),
-
-      levels = c("APOE4-", "APOE4+")
-
-    )
-
-    
-
-    # APOE genotype groups for dose-response analysis
-
-    data$APOE_Group <- factor(
-
-      ifelse(data$APOE4 == 2, "ε4/ε4",
-
-             ifelse(data$APOE4 == 1, "ε4/ε3 or ε4/ε2", 
-
-                    "ε3/ε3 or ε3/ε2 or ε2/ε2")),
-
-      levels = c("ε3/ε3 or ε3/ε2 or ε2/ε2", "ε4/ε3 or ε4/ε2", "ε4/ε4")
-
-    )
-
-  }
-
-  
-
-  # Identify ICV column
-
-  icv_col <- NULL
-
-  if ("ICV" %in% colnames(data)) {
-
-    icv_col <- "ICV"
-
-  } else if ("ST10CV" %in% colnames(data)) {
-
-    icv_col <- "ST10CV"
-
-  }
-
-  
-
-  # Create imaging-derived variables
-
-  if (!is.null(icv_col)) {
-
-    
-
-    # WMH (White Matter Hyperintensities)
-
-    if ("ST128SV" %in% colnames(data)) {
-
-      data$WMH_ICV_Ratio <- data$ST128SV / data[[icv_col]] * 1000
-
-      data$WMH_Log <- log(data$ST128SV + 1)
-
-      cat("Created WMH variables\n")
-
+  for (col in c("ABETA", "TAU", "PTAU")) {
+    if (col %in% colnames(data)) {
+      data[[col]] <- as.numeric(gsub("[^0-9.]", "", data[[col]]))
     }
+  }
 
-    
+  # Longitudinal MCI-to-AD conversion from multi-visit data
+  adnimerge_long <- attr(data, "adnimerge_long")
+  data$Converted <- 0L
+  data$Time_to_Conversion <- NA_real_
 
-    # Hippocampus
+  if (!is.null(adnimerge_long)) {
+    adnimerge_long <- as.data.frame(adnimerge_long)
 
-    if ("ST29SV" %in% colnames(data) && "ST88SV" %in% colnames(data)) {
+    # Auto-detect column names
+    month_col <- detect_month_col(adnimerge_long)
+    dx_long_col <- detect_dx_col(adnimerge_long)
+    dx_bl <- detect_dx_bl_col(adnimerge_long)
+    if (dx_bl != "DX.bl") adnimerge_long$DX.bl <- adnimerge_long[[dx_bl]]
 
-      data$Hippo_Total <- data$ST29SV + data$ST88SV
+    mci_rids <- data$RID[data$DX.bl %in% c("LMCI", "EMCI", "MCI")]
 
-      data$Hippo_ICV_Ratio <- data$Hippo_Total / data[[icv_col]] * 1000
+    for (rid in mci_rids) {
+      visits <- adnimerge_long[adnimerge_long$RID == rid, ]
+      visits <- visits[order(visits[[month_col]]), ]
 
-      cat("Created Hippocampus variables\n")
-
-    } else if ("Hippocampus" %in% colnames(data)) {
-
-      data$Hippo_Total <- data$Hippocampus
-
-      if (!is.null(icv_col) && icv_col %in% colnames(data)) {
-
-        data$Hippo_ICV_Ratio <- data$Hippo_Total / data[[icv_col]] * 1000
-
+      # Find first visit where DX indicates dementia/AD
+      is_dem <- map_dx_to_dementia(visits[[dx_long_col]], dx_long_col)
+      dem_visits <- visits[is_dem, ]
+      if (nrow(dem_visits) > 0) {
+        first_dem <- dem_visits[1, ]
+        idx <- which(data$RID == rid)
+        data$Converted[idx] <- 1L
+        conv_month <- first_dem[[month_col]]
+        if (!is.na(conv_month)) {
+          data$Time_to_Conversion[idx] <- as.numeric(conv_month) / 12
+        }
       }
-
     }
-
-    
-
-    # Ventricles
-
-    if ("ST37SV" %in% colnames(data) && "ST96SV" %in% colnames(data)) {
-
-      data$Ventricle_Total <- data$ST37SV + data$ST96SV
-
-      data$Ventricle_ICV_Ratio <- data$Ventricle_Total / data[[icv_col]] * 1000
-
-      cat("Created Ventricle variables\n")
-
-    } else if ("Ventricles" %in% colnames(data)) {
-
-      data$Ventricle_Total <- data$Ventricles
-
-      if (!is.null(icv_col) && icv_col %in% colnames(data)) {
-
-        data$Ventricle_ICV_Ratio <- data$Ventricle_Total / data[[icv_col]] * 1000
-
-      }
-
-    }
-
-    
-
-    # Entorhinal cortex
-
-    if ("ST24CV" %in% colnames(data) && "ST83CV" %in% colnames(data)) {
-
-      data$Entorhinal_Total <- data$ST24CV + data$ST83CV
-
-      data$Entorhinal_ICV_Ratio <- data$Entorhinal_Total / data[[icv_col]] * 1000
-
-      cat("Created Entorhinal variables\n")
-
-    } else if ("Entorhinal" %in% colnames(data)) {
-
-      data$Entorhinal_Total <- data$Entorhinal
-
-      if (!is.null(icv_col) && icv_col %in% colnames(data)) {
-
-        data$Entorhinal_ICV_Ratio <- data$Entorhinal_Total / data[[icv_col]] * 1000
-
-      }
-
-    }
-
   }
 
-  
-
-  cat("Final sample size:", nrow(data), "\n")
-
-  
+  # Median follow-up for MCI subjects
+  if (!is.null(adnimerge_long)) {
+    month_col <- detect_month_col(adnimerge_long)
+    mci_data <- data[data$DX.bl %in% c("LMCI", "EMCI", "MCI"), ]
+    follow_up_months <- sapply(mci_data$RID, function(rid) {
+      visits <- adnimerge_long[adnimerge_long$RID == rid, ]
+      if (nrow(visits) > 0) max(as.numeric(visits[[month_col]]), na.rm = TRUE) else NA
+    })
+    data$Median_Followup_Years <- median(follow_up_months / 12, na.rm = TRUE)
+  }
 
   return(data)
-
 }
 
 
-
+# ==============================================================================
+# 2. APOE-STRATIFIED PRS-BIOMARKER ASSOCIATIONS WITH DOSE-RESPONSE
 # ==============================================================================
 
-# APOE-Stratified PRS-Biomarker Analysis
+run_apoe_stratified_analysis <- function(data) {
 
-# ==============================================================================
+  prs_vars <- c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin", "PRS_EOAD_Microglia",
+                 "PRS_EOAD_Abeta", "PRS_EOAD_APP", "PRS_EOAD_Global",
+                 "PRS_EOAD_Lipid", "PRS_EOAD_TCell")
+  outcomes <- c("ABETA", "TAU", "PTAU", "WMH_Log", "Hippo_Norm")
+  if ("STREM2" %in% colnames(data)) outcomes <- c(outcomes, "STREM2")
 
+  results <- list()
+  for (apoe_grp in levels(data$APOE_Group)) {
+    sub <- data[data$APOE_Group == apoe_grp, ]
+    if (nrow(sub) < 20) next
 
+    for (prs in prs_vars) {
+      if (!prs %in% colnames(data)) next
+      for (outcome in outcomes) {
+        if (!outcome %in% colnames(data)) next
+        covars <- c("AGE", "PTGENDER", "PTEDUCAT")
+        df <- sub[complete.cases(sub[, c(prs, outcome, covars)]), ]
+        if (nrow(df) < 15) next
 
-analyze_apoe_stratified_associations <- function(data, output_dir) {
+        fml <- as.formula(paste(outcome, "~", prs, "+",
+                                paste(covars, collapse = " + ")))
+        fit <- tryCatch(lm(fml, data = df), error = function(e) NULL)
+        if (is.null(fit)) next
+        s <- summary(fit)$coefficients
+        if (!prs %in% rownames(s)) next
 
-  
-
-  cat("\n=== APOE-Stratified PRS-Biomarker Analysis ===\n")
-
-  
-
-  # Define PRS and biomarker variables
-
-  prs_vars <- c("PRS_EOAD_Microglia", "PRS_EOAD_Oligo", "PRS_EOAD_Myelin", 
-
-                "PRS_EOAD_Abeta", "PRS_EOAD_Global")
-
-  prs_available <- prs_vars[prs_vars %in% colnames(data)]
-
-  
-
-  biomarker_vars <- c("CSF_STREM2", "CSF_ABETA42", "CSF_TAU", "CSF_PTAU")
-
-  biomarker_available <- biomarker_vars[biomarker_vars %in% colnames(data)]
-
-  
-
-  if (!"APOE_Group" %in% colnames(data)) {
-
-    cat("APOE_Group not available, skipping analysis\n")
-
-    return(NULL)
-
+        results[[length(results) + 1]] <- data.frame(
+          APOE_Group = apoe_grp, PRS = prs, Outcome = outcome,
+          Beta = s[prs, "Estimate"], SE = s[prs, "Std. Error"],
+          P = s[prs, "Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
   }
 
-  
+  res <- do.call(rbind, results)
+  res$P_FDR <- p.adjust(res$P, method = "BH")
+  return(res)
+}
 
-  # Analysis function
 
-  run_apoe_stratified <- function(data, prs_var, biomarker_var, 
+# ==============================================================================
+# 2b. DOSE-RESPONSE: PRS QUARTILE TREND ANALYSIS (sTREM2 focus)
+# ==============================================================================
 
-                                  covariates = c("AGE", "PTGENDER"), 
+run_dose_response_analysis <- function(data, n_quantiles = 4) {
 
-                                  min_n = 20) {
+  prs_vars <- c("PRS_EOAD_Microglia", "PRS_EOAD_Oligo", "PRS_EOAD_Myelin",
+                 "PRS_EOAD_Abeta")
+  prs_vars <- prs_vars[prs_vars %in% colnames(data)]
 
-    
+  outcomes <- c("ABETA", "TAU", "PTAU", "WMH_Log", "Hippo_Norm")
+  if ("STREM2" %in% colnames(data)) outcomes <- c(outcomes, "STREM2")
 
-    if (!prs_var %in% colnames(data) || !biomarker_var %in% colnames(data)) {
+  covars <- c("AGE", "PTGENDER", "PTEDUCAT")
 
-      return(NULL)
+  trend_results <- list()
+  quantile_means <- list()
 
-    }
+  for (apoe_grp in levels(data$APOE_Group)) {
+    sub <- data[data$APOE_Group == apoe_grp, ]
+    if (nrow(sub) < 20) next
 
-    
+    for (prs in prs_vars) {
+      if (!prs %in% colnames(sub)) next
+      df <- sub[!is.na(sub[[prs]]), ]
+      if (nrow(df) < n_quantiles * 5) next
 
-    available_cov <- covariates[covariates %in% colnames(data)]
+      # Create PRS quantile groups
+      df$PRS_Quantile <- ntile(df[[prs]], n_quantiles)
 
-    vars_needed <- c(prs_var, biomarker_var, "APOE_Group", available_cov)
+      for (outcome in outcomes) {
+        if (!outcome %in% colnames(df)) next
+        df_out <- df[complete.cases(df[, c("PRS_Quantile", outcome, covars)]), ]
+        if (nrow(df_out) < n_quantiles * 3) next
 
-    data_complete <- data[complete.cases(data[, vars_needed, drop = FALSE]), ]
+        # Quantile-level means
+        q_means <- df_out %>%
+          group_by(PRS_Quantile) %>%
+          summarise(
+            Mean = mean(.data[[outcome]], na.rm = TRUE),
+            SD = sd(.data[[outcome]], na.rm = TRUE),
+            N = n(),
+            .groups = "drop"
+          ) %>%
+          mutate(APOE_Group = apoe_grp, PRS = prs, Outcome = outcome)
+        quantile_means[[length(quantile_means) + 1]] <- q_means
 
-    
+        # Linear trend test: PRS_Quantile as ordered numeric predictor
+        fml <- as.formula(paste(outcome, "~ PRS_Quantile +",
+                                paste(covars, collapse = " + ")))
+        fit <- tryCatch(lm(fml, data = df_out), error = function(e) NULL)
+        if (is.null(fit)) next
+        s <- summary(fit)$coefficients
+        if (!"PRS_Quantile" %in% rownames(s)) next
 
-    if (nrow(data_complete) < min_n) return(NULL)
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    results_list <- list()
-
-    
-
-    # Stratified analysis by APOE genotype
-
-    for (apoe_grp in levels(data_complete$APOE_Group)) {
-
-      grp_data <- data_complete[data_complete$APOE_Group == apoe_grp, ]
-
-      
-
-      if (nrow(grp_data) < min_n) next
-
-      
-
-      # Build formula
-
-      if (length(available_cov) > 0) {
-
-        formula_str <- paste(biomarker_var, "~", "PRS_z", "+", 
-
-                            paste(available_cov, collapse = " + "))
-
-      } else {
-
-        formula_str <- paste(biomarker_var, "~", "PRS_z")
-
+        trend_results[[length(trend_results) + 1]] <- data.frame(
+          APOE_Group = apoe_grp, PRS = prs, Outcome = outcome,
+          Beta_Trend = s["PRS_Quantile", "Estimate"],
+          SE = s["PRS_Quantile", "Std. Error"],
+          P_Trend = s["PRS_Quantile", "Pr(>|t|)"],
+          N = nrow(df_out),
+          stringsAsFactors = FALSE
+        )
       }
+    }
+  }
 
-      
+  trend_df <- if (length(trend_results) > 0) do.call(rbind, trend_results) else data.frame()
+  means_df <- if (length(quantile_means) > 0) do.call(rbind, quantile_means) else data.frame()
 
-      model <- tryCatch(
+  if (nrow(trend_df) > 0) trend_df$P_FDR <- p.adjust(trend_df$P_Trend, method = "BH")
 
-        lm(as.formula(formula_str), data = grp_data),
+  list(trend = trend_df, quantile_means = means_df)
+}
 
-        error = function(e) NULL
 
+# ==============================================================================
+# 3. LONGITUDINAL MCI-TO-AD CONVERSION (LOGISTIC REGRESSION)
+# ==============================================================================
+
+run_conversion_analysis <- function(data) {
+
+  dx_bl_col <- detect_dx_bl_col(data)
+  mci <- data[data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI"), ]
+
+  prs_vars <- c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin", "PRS_EOAD_Microglia",
+                 "PRS_EOAD_Abeta", "PRS_EOAD_Global",
+                 "PRS_EOAD_Lipid", "PRS_EOAD_TCell")
+  prs_vars <- prs_vars[prs_vars %in% colnames(mci)]
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
+
+  # --- Full-cohort logistic regression ---
+  full_results <- list()
+  for (prs in prs_vars) {
+    df <- mci[complete.cases(mci[, c(prs, "Converted", covars)]), ]
+    if (nrow(df) < 20 || sum(df$Converted) < 5) next
+    fml <- as.formula(paste("Converted ~", prs, "+",
+                            paste(covars, collapse = " + ")))
+    fit <- glm(fml, data = df, family = binomial)
+    ci <- confint.default(fit)
+    s <- summary(fit)$coefficients[prs, ]
+
+    full_results[[length(full_results) + 1]] <- data.frame(
+      Stratum = "Full_MCI", PRS = prs,
+      OR = exp(s["Estimate"]),
+      OR_Lower = exp(ci[prs, 1]), OR_Upper = exp(ci[prs, 2]),
+      P = s["Pr(>|z|)"], N = nrow(df),
+      N_Converted = sum(df$Converted, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # --- Age-stratified logistic regression ---
+  strat_results <- list()
+  for (age_grp in c("Younger", "Older")) {
+    sub <- mci[mci$Age_Group == age_grp, ]
+    for (prs in prs_vars) {
+      df <- sub[complete.cases(sub[, c(prs, "Converted", covars)]), ]
+      if (nrow(df) < 20 || sum(df$Converted) < 5) next
+
+      fml <- as.formula(paste("Converted ~", prs, "+",
+                              paste(covars, collapse = " + ")))
+      fit <- glm(fml, data = df, family = binomial)
+      ci <- confint.default(fit)
+      s <- summary(fit)$coefficients[prs, ]
+
+      strat_results[[length(strat_results) + 1]] <- data.frame(
+        Stratum = age_grp, PRS = prs,
+        OR = exp(s["Estimate"]),
+        OR_Lower = exp(ci[prs, 1]), OR_Upper = exp(ci[prs, 2]),
+        P = s["Pr(>|z|)"], N = nrow(df),
+        N_Converted = sum(df$Converted, na.rm = TRUE),
+        stringsAsFactors = FALSE
       )
-
-      
-
-      if (!is.null(model)) {
-
-        coef_summary <- summary(model)$coefficients
-
-        if ("PRS_z" %in% rownames(coef_summary)) {
-
-          results_list[[apoe_grp]] <- data.frame(
-
-            PRS = prs_var,
-
-            Biomarker = biomarker_var,
-
-            APOE_Group = apoe_grp,
-
-            N = nrow(grp_data),
-
-            Beta = coef_summary["PRS_z", "Estimate"],
-
-            SE = coef_summary["PRS_z", "Std. Error"],
-
-            t_value = coef_summary["PRS_z", "t value"],
-
-            P_value = coef_summary["PRS_z", "Pr(>|t|)"],
-
-            stringsAsFactors = FALSE
-
-          )
-
-        }
-
-      }
-
     }
-
-    
-
-    if (length(results_list) > 0) {
-
-      return(do.call(rbind, results_list))
-
-    } else {
-
-      return(NULL)
-
-    }
-
   }
 
-  
-
-  # Run analysis for all combinations
-
-  all_results <- list()
-
-  for (prs in prs_available) {
-
-    for (bio in biomarker_available) {
-
-      result <- run_apoe_stratified(data, prs, bio)
-
-      if (!is.null(result)) {
-
-        all_results[[paste(prs, bio, sep = "_")]] <- result
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (length(all_results) > 0) {
-
-    results_df <- do.call(rbind, all_results)
-
-    rownames(results_df) <- NULL
-
-    
-
-    # FDR correction within each APOE group
-
-    results_df <- results_df %>%
-
-      group_by(APOE_Group) %>%
-
-      mutate(P_FDR = p.adjust(P_value, method = "fdr")) %>%
-
-      ungroup()
-
-    
-
-    # Test for APOE × PRS interaction
-
-    interaction_results <- test_apoe_prs_interaction(data, prs_available, 
-
-                                                     biomarker_available)
-
-    
-
-    # Save results
-
-    dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-               recursive = TRUE)
-
-    fwrite(results_df, file.path(output_dir, "Tables", 
-
-                                 "APOE_Stratified_PRS_Biomarker.csv"))
-
-    if (!is.null(interaction_results)) {
-
-      fwrite(interaction_results, file.path(output_dir, "Tables", 
-
-                                           "APOE_PRS_Interaction.csv"))
-
-    }
-
-    
-
-    cat("APOE-stratified analysis complete\n")
-
-    cat("Significant associations (P < 0.05):", 
-
-        sum(results_df$P_value < 0.05), "\n")
-
-    
-
-    # Print key finding: Microglia-PRS × APOE for sTREM2
-
-    if ("PRS_EOAD_Microglia" %in% results_df$PRS && 
-
-        "CSF_STREM2" %in% results_df$Biomarker) {
-
-      key_result <- results_df[results_df$PRS == "PRS_EOAD_Microglia" & 
-
-                               results_df$Biomarker == "CSF_STREM2", ]
-
-      if (nrow(key_result) > 0) {
-
-        cat("\nKey finding - Microglia-PRS vs sTREM2:\n")
-
-        print(key_result[, c("APOE_Group", "N", "Beta", "P_value")])
-
-      }
-
-    }
-
-    
-
-    return(list(stratified = results_df, interaction = interaction_results))
-
-  } else {
-
-    cat("No valid results\n")
-
-    return(NULL)
-
-  }
-
-}
-
-
-
-# Test APOE × PRS interaction
-
-test_apoe_prs_interaction <- function(data, prs_vars, biomarker_vars) {
-
-  
-
-  if (!"APOE4" %in% colnames(data)) return(NULL)
-
-  
-
+  # --- Age x PRS interaction ---
   interaction_results <- list()
-
-  
-
-  for (prs_var in prs_vars) {
-
-    for (bio_var in biomarker_vars) {
-
-      
-
-      vars_needed <- c(prs_var, bio_var, "APOE4", "AGE", "PTGENDER")
-
-      vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-      data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-      
-
-      if (nrow(data_complete) < 50) next
-
-      
-
-      data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-      
-
-      # Main effects model
-
-      formula_main <- paste(bio_var, "~ PRS_z + APOE4")
-
-      if ("AGE" %in% vars_available) formula_main <- paste(formula_main, "+ AGE")
-
-      if ("PTGENDER" %in% vars_available) formula_main <- paste(formula_main, "+ PTGENDER")
-
-      
-
-      # Interaction model
-
-      formula_int <- paste(bio_var, "~ PRS_z * APOE4")
-
-      if ("AGE" %in% vars_available) formula_int <- paste(formula_int, "+ AGE")
-
-      if ("PTGENDER" %in% vars_available) formula_int <- paste(formula_int, "+ PTGENDER")
-
-      
-
-      model_main <- tryCatch(lm(as.formula(formula_main), data = data_complete), 
-
-                            error = function(e) NULL)
-
-      model_int <- tryCatch(lm(as.formula(formula_int), data = data_complete), 
-
-                           error = function(e) NULL)
-
-      
-
-      if (!is.null(model_main) && !is.null(model_int)) {
-
-        anova_result <- tryCatch(anova(model_main, model_int), 
-
-                                error = function(e) NULL)
-
-        
-
-        if (!is.null(anova_result)) {
-
-          p_interaction <- anova_result$`Pr(>F)`[2]
-
-          
-
-          coef_int <- summary(model_int)$coefficients
-
-          int_term <- grep("PRS_z:APOE4|APOE4:PRS_z", rownames(coef_int), value = TRUE)
-
-          
-
-          if (length(int_term) > 0) {
-
-            interaction_results[[paste(prs_var, bio_var, sep = "_")]] <- data.frame(
-
-              PRS = prs_var,
-
-              Biomarker = bio_var,
-
-              N = nrow(data_complete),
-
-              Beta_Interaction = coef_int[int_term[1], "Estimate"],
-
-              SE_Interaction = coef_int[int_term[1], "Std. Error"],
-
-              P_Interaction = p_interaction,
-
-              stringsAsFactors = FALSE
-
-            )
-
-          }
-
-        }
-
-      }
-
+  for (prs in prs_vars) {
+    df <- mci[complete.cases(mci[, c(prs, "Converted", covars, "Age_Group")]), ]
+    if (nrow(df) < 30) next
+    fml <- as.formula(paste("Converted ~", prs, "* Age_Group +",
+                            paste(covars, collapse = " + ")))
+    fit <- glm(fml, data = df, family = binomial)
+    int_term <- grep(paste0(prs, ":"), names(coef(fit)), value = TRUE)
+    if (length(int_term) > 0) {
+      ci <- confint.default(fit)
+      s <- summary(fit)$coefficients[int_term, ]
+      interaction_results[[length(interaction_results) + 1]] <- data.frame(
+        PRS = prs, Interaction_Term = int_term,
+        OR_Interaction = exp(s["Estimate"]),
+        OR_Lower = exp(ci[int_term, 1]), OR_Upper = exp(ci[int_term, 2]),
+        P = s["Pr(>|z|)"],
+        stringsAsFactors = FALSE
+      )
     }
-
   }
 
-  
-
-  if (length(interaction_results) > 0) {
-
-    interaction_df <- do.call(rbind, interaction_results)
-
-    rownames(interaction_df) <- NULL
-
-    interaction_df$P_FDR <- p.adjust(interaction_df$P_Interaction, method = "fdr")
-
-    return(interaction_df)
-
-  } else {
-
-    return(NULL)
-
+  # --- Sensitivity: <65 years ---
+  sens_results <- list()
+  mci_young <- mci[mci$AGE < 65, ]
+  for (prs in c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin")) {
+    if (!prs %in% colnames(mci_young)) next
+    df <- mci_young[complete.cases(mci_young[, c(prs, "Converted", covars)]), ]
+    if (nrow(df) < 15 || sum(df$Converted) < 3) next
+    fml <- as.formula(paste("Converted ~", prs, "+",
+                            paste(covars, collapse = " + ")))
+    fit <- glm(fml, data = df, family = binomial)
+    ci <- confint.default(fit)
+    s <- summary(fit)$coefficients[prs, ]
+    sens_results[[length(sens_results) + 1]] <- data.frame(
+      Stratum = "Under65", PRS = prs,
+      OR = exp(s["Estimate"]),
+      OR_Lower = exp(ci[prs, 1]), OR_Upper = exp(ci[prs, 2]),
+      P = s["Pr(>|z|)"], N = nrow(df),
+      stringsAsFactors = FALSE
+    )
   }
 
+  list(
+    full = do.call(rbind, full_results),
+    stratified = do.call(rbind, strat_results),
+    interaction = do.call(rbind, interaction_results),
+    sensitivity_under65 = if (length(sens_results) > 0) do.call(rbind, sens_results) else NULL
+  )
 }
 
 
-
-cat("\n=== Part 1 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - load_adni_data()\n")
-
-cat("  - create_derived_variables()\n")
-
-cat("  - analyze_apoe_stratified_associations()\n")
-
-cat("  - test_apoe_prs_interaction()\n")
-
+# ==============================================================================
+# 4. PRS-NEUROIMAGING ASSOCIATIONS WITH AGE INTERACTIONS
 # ==============================================================================
 
-# ADNI Independent Cohort Validation Analysis - Part 2
+run_neuroimaging_analysis <- function(data) {
 
-# Age-Stratified MCI Conversion Analysis (LOGISTIC REGRESSION)
+  prs_vars <- c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin", "PRS_EOAD_Microglia",
+                 "PRS_EOAD_Abeta", "PRS_EOAD_Global")
+  prs_vars <- prs_vars[prs_vars %in% colnames(data)]
+  outcomes <- c("WMH_Log", "Hippo_Norm", "Ventricle_Norm", "Entorhinal_Norm")
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
 
-# ==============================================================================
+  # --- Main effects by age stratum ---
+  strat_results <- list()
+  for (age_grp in c("Younger", "Older")) {
+    sub <- data[data$Age_Group == age_grp, ]
+    for (prs in prs_vars) {
+      for (outcome in outcomes) {
+        df <- sub[complete.cases(sub[, c(prs, outcome, covars)]), ]
+        if (nrow(df) < 20) next
 
-#
+        fml <- as.formula(paste(outcome, "~", prs, "+",
+                                paste(covars, collapse = " + ")))
+        fit <- lm(fml, data = df)
+        s <- summary(fit)$coefficients[prs, ]
 
-# This part addresses CRITICAL ISSUE #1:
+        strat_results[[length(strat_results) + 1]] <- data.frame(
+          Age_Group = age_grp, PRS = prs, Outcome = outcome,
+          Beta = s["Estimate"], SE = s["Std. Error"],
+          P = s["Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+  strat_df <- do.call(rbind, strat_results)
+  strat_df$P_FDR <- p.adjust(strat_df$P, method = "BH")
 
-# - Uses LOGISTIC regression (outputs OR) instead of Cox regression (outputs HR)
+  # --- Age x PRS interaction (continuous age) ---
+  interaction_results <- list()
+  for (prs in prs_vars) {
+    for (outcome in outcomes) {
+      df <- data[complete.cases(data[, c(prs, outcome, covars)]), ]
+      if (nrow(df) < 50) next
 
-# - Matches Results reporting: OR_interaction = 0.54, P = 0.005
-
-#
-
-# Also addresses CRITICAL ISSUE #3:
-
-# - Adds <65 years sensitivity analysis (N=90, OR=1.76)
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# MCI Conversion Analysis - Logistic Regression
-
-# ==============================================================================
-
-
-
-analyze_mci_conversion_logistic <- function(data, output_dir) {
-
-  
-
-  cat("\n=== MCI Conversion Analysis (Logistic Regression) ===\n")
-
-  
-
-  # Filter MCI patients at baseline
-
-  mci_data <- data[data$DX_bl == "MCI" & !is.na(data$DX_bl), ]
-
-  
-
-  if (nrow(mci_data) < 50) {
-
-    cat("Insufficient MCI patients\n")
-
-    return(NULL)
-
+      fml <- as.formula(paste(outcome, "~", prs, "* AGE + PTGENDER + APOE4 + PTEDUCAT"))
+      fit <- lm(fml, data = df)
+      int_term <- paste0(prs, ":AGE")
+      if (int_term %in% rownames(summary(fit)$coefficients)) {
+        s <- summary(fit)$coefficients[int_term, ]
+        interaction_results[[length(interaction_results) + 1]] <- data.frame(
+          PRS = prs, Outcome = outcome,
+          Beta_Interaction = s["Estimate"], SE = s["Std. Error"],
+          P_Interaction = s["Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+  int_df <- do.call(rbind, interaction_results)
+  if (!is.null(int_df) && nrow(int_df) > 0) {
+    int_df$P_FDR <- p.adjust(int_df$P_Interaction, method = "BH")
   }
 
-  
+  list(stratified = strat_df, interaction = int_df)
+}
 
-  # Define conversion outcome
 
-  # Conversion = progressed to dementia during follow-up
+# ==============================================================================
+# 5. SLIDING-WINDOW AGE-DEPENDENCY MAPPING
+# ==============================================================================
 
-  if ("DX" %in% colnames(mci_data)) {
+run_sliding_window <- function(data, window_width = 10, step = 2,
+                               min_age = 55, max_age = 85, min_n = 30) {
 
-    mci_data$Converted <- ifelse(mci_data$DX == "Dementia", 1, 0)
-
-  } else {
-
-    cat("Conversion outcome not available\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Check PRS availability
-
+  centre_ages <- seq(min_age + window_width / 2,
+                     max_age - window_width / 2, by = step)
   prs_var <- "PRS_EOAD_Oligo"
 
-  if (!prs_var %in% colnames(mci_data)) {
+  dx_bl_col <- detect_dx_bl_col(data)
+  mci <- data[data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI"), ]
 
-    prs_candidates <- grep("PRS.*Oligo", colnames(mci_data), value = TRUE)
+  wmh_results <- list()
+  conv_results <- list()
 
-    if (length(prs_candidates) > 0) {
+  for (ca in centre_ages) {
+    lo <- ca - window_width / 2
+    hi <- ca + window_width / 2
 
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      cat("Oligodendrocyte PRS not found\n")
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Prepare data
-
-  vars_needed <- c(prs_var, "Converted", "AGE", "PTGENDER", "APOE4", "Age_Group_70")
-
-  vars_available <- vars_needed[vars_needed %in% colnames(mci_data)]
-
-  mci_complete <- mci_data[complete.cases(mci_data[, vars_available, drop = FALSE]), ]
-
-  
-
-  cat("MCI cohort size:", nrow(mci_complete), "\n")
-
-  cat("Conversions:", sum(mci_complete$Converted), "\n")
-
-  cat("Non-conversions:", sum(1 - mci_complete$Converted), "\n")
-
-  
-
-  # Standardize PRS
-
-  mci_complete$PRS_z <- scale(mci_complete[[prs_var]])
-
-  
-
-  # ============================================================================
-
-  # Analysis 1: Age-Stratified Analysis (Primary: 70 years cutoff)
-
-  # ============================================================================
-
-  
-
-  cat("\n--- Age-Stratified Analysis (<70 vs ≥70 years) ---\n")
-
-  
-
-  results_age_70 <- list()
-
-  
-
-  # Younger group (<70 years)
-
-  younger_data <- mci_complete[mci_complete$Age_Group_70 == "Younger (<70)", ]
-
-  cat("Younger (<70): N =", nrow(younger_data), 
-
-      ", Conversions =", sum(younger_data$Converted), "\n")
-
-  
-
-  if (nrow(younger_data) >= 30 && sum(younger_data$Converted) >= 10) {
-
-    model_younger <- glm(Converted ~ PRS_z + AGE + PTGENDER + APOE4,
-
-                        data = younger_data,
-
-                        family = binomial(link = "logit"))
-
-    
-
-    coef_younger <- summary(model_younger)$coefficients
-
-    if ("PRS_z" %in% rownames(coef_younger)) {
-
-      or_younger <- exp(coef_younger["PRS_z", "Estimate"])
-
-      ci_lower <- exp(coef_younger["PRS_z", "Estimate"] - 
-
-                     1.96 * coef_younger["PRS_z", "Std. Error"])
-
-      ci_upper <- exp(coef_younger["PRS_z", "Estimate"] + 
-
-                     1.96 * coef_younger["PRS_z", "Std. Error"])
-
-      
-
-      results_age_70$Younger <- data.frame(
-
-        Age_Group = "Younger (<70)",
-
-        N = nrow(younger_data),
-
-        N_Converted = sum(younger_data$Converted),
-
-        OR = or_younger,
-
-        CI_Lower = ci_lower,
-
-        CI_Upper = ci_upper,
-
-        P_value = coef_younger["PRS_z", "Pr(>|z|)"],
-
+    # WMH linear regression (full sample, ICV as covariate)
+    w_all <- data[data$AGE >= lo & data$AGE < hi, ]
+    df_wmh <- w_all[complete.cases(w_all[, c(prs_var, "WMH_Log", "AGE",
+                                              "PTGENDER", "ST10CV")]), ]
+    if (nrow(df_wmh) >= min_n) {
+      fml <- as.formula(paste("WMH_Log ~", prs_var, "+ AGE + PTGENDER + ST10CV"))
+      fit <- lm(fml, data = df_wmh)
+      s <- summary(fit)$coefficients[prs_var, ]
+      wmh_results[[length(wmh_results) + 1]] <- data.frame(
+        Centre_Age = ca, Beta = s["Estimate"], SE = s["Std. Error"],
+        P = s["Pr(>|t|)"], N = nrow(df_wmh),
         stringsAsFactors = FALSE
-
       )
-
-      
-
-      cat(sprintf("  OR = %.2f, 95%% CI: %.2f-%.2f, P = %.3f\n",
-
-                 or_younger, ci_lower, ci_upper, 
-
-                 coef_younger["PRS_z", "Pr(>|z|)"]))
-
     }
 
-  }
-
-  
-
-  # Older group (≥70 years)
-
-  older_data <- mci_complete[mci_complete$Age_Group_70 == "Older (≥70)", ]
-
-  cat("Older (≥70): N =", nrow(older_data), 
-
-      ", Conversions =", sum(older_data$Converted), "\n")
-
-  
-
-  if (nrow(older_data) >= 30 && sum(older_data$Converted) >= 10) {
-
-    model_older <- glm(Converted ~ PRS_z + AGE + PTGENDER + APOE4,
-
-                      data = older_data,
-
-                      family = binomial(link = "logit"))
-
-    
-
-    coef_older <- summary(model_older)$coefficients
-
-    if ("PRS_z" %in% rownames(coef_older)) {
-
-      or_older <- exp(coef_older["PRS_z", "Estimate"])
-
-      ci_lower <- exp(coef_older["PRS_z", "Estimate"] - 
-
-                     1.96 * coef_older["PRS_z", "Std. Error"])
-
-      ci_upper <- exp(coef_older["PRS_z", "Estimate"] + 
-
-                     1.96 * coef_older["PRS_z", "Std. Error"])
-
-      
-
-      results_age_70$Older <- data.frame(
-
-        Age_Group = "Older (≥70)",
-
-        N = nrow(older_data),
-
-        N_Converted = sum(older_data$Converted),
-
-        OR = or_older,
-
-        CI_Lower = ci_lower,
-
-        CI_Upper = ci_upper,
-
-        P_value = coef_older["PRS_z", "Pr(>|z|)"],
-
+    # Conversion logistic regression (MCI only)
+    w_mci <- mci[mci$AGE >= lo & mci$AGE < hi, ]
+    conv_covars <- c(prs_var, "Converted", "AGE", "PTGENDER", "APOE4", "PTEDUCAT")
+    df_conv <- w_mci[complete.cases(w_mci[, conv_covars]), ]
+    if (nrow(df_conv) >= min_n && sum(df_conv$Converted) >= 5) {
+      fml <- as.formula(paste("Converted ~", prs_var,
+                              "+ AGE + PTGENDER + APOE4 + PTEDUCAT"))
+      fit <- glm(fml, data = df_conv, family = binomial)
+      ci <- confint.default(fit)
+      s <- summary(fit)$coefficients[prs_var, ]
+      conv_results[[length(conv_results) + 1]] <- data.frame(
+        Centre_Age = ca,
+        OR = exp(s["Estimate"]),
+        OR_Lower = exp(ci[prs_var, 1]), OR_Upper = exp(ci[prs_var, 2]),
+        P = s["Pr(>|z|)"], N = nrow(df_conv),
+        N_Converted = sum(df_conv$Converted),
         stringsAsFactors = FALSE
-
       )
-
-      
-
-      cat(sprintf("  OR = %.2f, 95%% CI: %.2f-%.2f, P = %.3f\n",
-
-                 or_older, ci_lower, ci_upper, 
-
-                 coef_older["PRS_z", "Pr(>|z|)"]))
-
     }
-
   }
 
-  
+  wmh_df <- if (length(wmh_results) > 0) do.call(rbind, wmh_results) else data.frame()
+  conv_df <- if (length(conv_results) > 0) do.call(rbind, conv_results) else data.frame()
 
-  # Test PRS × Age interaction
+  if (nrow(wmh_df) > 0) {
+    wmh_df$P_FDR <- p.adjust(wmh_df$P, method = "BH")
+    # Peak = window with largest positive beta (strongest risk effect)
+    peak_beta <- max(abs(wmh_df$Beta))
+    late_beta <- abs(wmh_df$Beta[wmh_df$Centre_Age == max(wmh_df$Centre_Age)])
+    wmh_df$Dissipation_Pct <- round((1 - late_beta / peak_beta) * 100, 1)
+    wmh_df$Peak_Centre_Age <- wmh_df$Centre_Age[which.max(abs(wmh_df$Beta))]
+  }
 
-  cat("\n--- Testing PRS × Age Interaction ---\n")
-
-  
-
-  model_interaction <- glm(Converted ~ PRS_z * AGE + PTGENDER + APOE4,
-
-                          data = mci_complete,
-
-                          family = binomial(link = "logit"))
-
-  
-
-  coef_int <- summary(model_interaction)$coefficients
-
-  int_term <- grep("PRS_z:AGE|AGE:PRS_z", rownames(coef_int), value = TRUE)
-
-  
-
-  if (length(int_term) > 0) {
-
-    or_interaction <- exp(coef_int[int_term[1], "Estimate"])
-
-    p_interaction <- coef_int[int_term[1], "Pr(>|z|)"]
-
-    
-
-    cat(sprintf("OR_interaction = %.2f, P = %.3f\n", 
-
-               or_interaction, p_interaction))
-
-    
-
-    results_age_70$Interaction <- data.frame(
-
-      Analysis = "PRS × Age Interaction",
-
-      N = nrow(mci_complete),
-
-      OR_Interaction = or_interaction,
-
-      P_Interaction = p_interaction,
-
-      stringsAsFactors = FALSE
-
+  if (nrow(conv_df) > 0) {
+    conv_df$P_FDR <- p.adjust(conv_df$P, method = "BH")
+    # Peak = window with highest OR (strongest risk for conversion)
+    peak_idx <- which.max(conv_df$OR)
+    peak_or <- conv_df$OR[peak_idx]
+    late_or <- conv_df$OR[conv_df$Centre_Age == max(conv_df$Centre_Age)]
+    # Dissipation based on log(OR) reduction from peak
+    conv_df$Dissipation_Pct <- round(
+      (1 - log(late_or) / log(peak_or)) * 100, 1
     )
-
+    conv_df$Peak_Centre_Age <- conv_df$Centre_Age[peak_idx]
   }
 
-  
-
-  # ============================================================================
-
-  # Analysis 2: Sensitivity Analysis (<65 years cutoff)
-
-  # CRITICAL ISSUE #3: Add <65 years analysis
-
-  # ============================================================================
-
-  
-
-  cat("\n--- Sensitivity Analysis (<65 years) ---\n")
-
-  
-
-  if ("Age_Group_65" %in% colnames(mci_complete)) {
-
-    
-
-    # EOAD group (<65 years)
-
-    eoad_data <- mci_complete[mci_complete$Age_Group_65 == "EOAD (<65)", ]
-
-    cat("EOAD (<65): N =", nrow(eoad_data), 
-
-        ", Conversions =", sum(eoad_data$Converted), "\n")
-
-    
-
-    if (nrow(eoad_data) >= 20 && sum(eoad_data$Converted) >= 5) {
-
-      model_eoad <- glm(Converted ~ PRS_z + AGE + PTGENDER + APOE4,
-
-                       data = eoad_data,
-
-                       family = binomial(link = "logit"))
-
-      
-
-      coef_eoad <- summary(model_eoad)$coefficients
-
-      if ("PRS_z" %in% rownames(coef_eoad)) {
-
-        or_eoad <- exp(coef_eoad["PRS_z", "Estimate"])
-
-        ci_lower <- exp(coef_eoad["PRS_z", "Estimate"] - 
-
-                       1.96 * coef_eoad["PRS_z", "Std. Error"])
-
-        ci_upper <- exp(coef_eoad["PRS_z", "Estimate"] + 
-
-                       1.96 * coef_eoad["PRS_z", "Std. Error"])
-
-        
-
-        cat(sprintf("  OR = %.2f, 95%% CI: %.2f-%.2f, P = %.3f\n",
-
-                   or_eoad, ci_lower, ci_upper, 
-
-                   coef_eoad["PRS_z", "Pr(>|z|)"]))
-
-        
-
-        results_age_65 <- data.frame(
-
-          Age_Group = "EOAD (<65)",
-
-          N = nrow(eoad_data),
-
-          N_Converted = sum(eoad_data$Converted),
-
-          OR = or_eoad,
-
-          CI_Lower = ci_lower,
-
-          CI_Upper = ci_upper,
-
-          P_value = coef_eoad["PRS_z", "Pr(>|z|)"],
-
-          stringsAsFactors = FALSE
-
-        )
-
-      }
-
-    } else {
-
-      cat("  Insufficient sample size for <65 analysis\n")
-
-      results_age_65 <- NULL
-
-    }
-
-    
-
-  } else {
-
-    cat("Age_Group_65 variable not available\n")
-
-    results_age_65 <- NULL
-
-  }
-
-  
-
-  # ============================================================================
-
-  # Save Results
-
-  # ============================================================================
-
-  
-
-  dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  
-
-  # Primary analysis (70 years cutoff)
-
-  if (length(results_age_70) > 0) {
-
-    results_df_70 <- do.call(rbind, lapply(results_age_70, function(x) {
-
-      if (is.data.frame(x)) return(x) else return(NULL)
-
-    }))
-
-    
-
-    if (!is.null(results_df_70) && nrow(results_df_70) > 0) {
-
-      fwrite(results_df_70, 
-
-             file.path(output_dir, "Tables", 
-
-                      "MCI_Conversion_Age_Stratified_70.csv"))
-
-      cat("\nSaved: MCI_Conversion_Age_Stratified_70.csv\n")
-
-    }
-
-  }
-
-  
-
-  # Sensitivity analysis (65 years cutoff)
-
-  if (!is.null(results_age_65)) {
-
-    fwrite(results_age_65, 
-
-           file.path(output_dir, "Tables", 
-
-                    "MCI_Conversion_Sensitivity_65.csv"))
-
-    cat("Saved: MCI_Conversion_Sensitivity_65.csv\n")
-
-  }
-
-  
-
-  cat("\n=== MCI Conversion Analysis Complete ===\n")
-
-  
-
-  return(list(
-
-    age_70 = if(exists("results_df_70")) results_df_70 else NULL,
-
-    age_65 = results_age_65
-
-  ))
-
+  list(wmh = wmh_df, conversion = conv_df)
 }
 
 
-
+# ==============================================================================
+# 6. UNSUPERVISED GENETIC SUBTYPING (K-MEANS, K=3)
 # ==============================================================================
 
-# Visualization: Age-Stratified Conversion Rates
+run_genetic_subtyping <- function(data) {
 
-# ==============================================================================
+  prs_vars <- c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin", "PRS_EOAD_Microglia",
+                 "PRS_EOAD_Abeta", "PRS_EOAD_APP", "PRS_EOAD_Global")
+  prs_vars <- prs_vars[prs_vars %in% colnames(data)]
 
+  df <- data[complete.cases(data[, prs_vars]), ]
+  prs_mat <- scale(as.matrix(df[, prs_vars]))
 
+  set.seed(42)
+  km <- kmeans(prs_mat, centers = 3, nstart = 25, iter.max = 100)
+  df$Cluster_KM <- km$cluster
 
-plot_mci_conversion_by_age <- function(data, prs_var = "PRS_EOAD_Oligo", 
+  hc <- hclust(dist(prs_mat), method = "ward.D2")
+  df$Cluster_HC <- cutree(hc, k = 3)
 
-                                       output_dir) {
+  tab <- table(df$Cluster_KM, df$Cluster_HC)
+  concordance <- sum(apply(tab, 1, max)) / nrow(df)
 
-  
-
-  # Filter MCI patients
-
-  mci_data <- data[data$DX_bl == "MCI" & !is.na(data$DX_bl), ]
-
-  
-
-  if (!"Converted" %in% colnames(mci_data)) {
-
-    mci_data$Converted <- ifelse(mci_data$DX == "Dementia", 1, 0)
-
+  # Cohen's kappa for clustering agreement
+  kappa_value <- NA
+  kappa_p <- NA
+  if (requireNamespace("irr", quietly = TRUE)) {
+    kappa_result <- irr::kappa2(data.frame(km = df$Cluster_KM, hc = df$Cluster_HC))
+    kappa_value <- kappa_result$value
+    kappa_p <- kappa_result$p.value
   }
 
-  
+  sil <- silhouette(km$cluster, dist(prs_mat))
+  avg_sil <- mean(sil[, "sil_width"])
 
-  # Prepare data
+  # Label clusters by PRS profile
+  centres <- as.data.frame(km$centers)
+  centres$Cluster <- 1:3
+  oligo_myelin_score <- centres$PRS_EOAD_Oligo + centres$PRS_EOAD_Myelin
+  abeta_score <- centres$PRS_EOAD_Abeta
 
-  vars_needed <- c(prs_var, "Converted", "Age_Group_70")
+  labels <- rep("Background_Risk", 3)
+  labels[which.max(oligo_myelin_score)] <- "Oligo_Driven"
+  labels[which.max(abeta_score)] <- "High_Abeta"
+  if (sum(labels == "Background_Risk") == 0) {
+    bg_idx <- which.min(oligo_myelin_score + abeta_score)
+    labels[bg_idx] <- "Background_Risk"
+  }
 
-  vars_available <- vars_needed[vars_needed %in% colnames(mci_data)]
+  label_map <- setNames(labels, 1:3)
+  df$Subtype <- factor(label_map[as.character(df$Cluster_KM)],
+                        levels = c("Background_Risk", "Oligo_Driven", "High_Abeta"))
 
-  plot_data <- mci_data[complete.cases(mci_data[, vars_available, drop = FALSE]), ]
-
-  
-
-  if (nrow(plot_data) < 50) return(NULL)
-
-  
-
-  # Categorize PRS into tertiles
-
-  plot_data$PRS_Tertile <- cut(plot_data[[prs_var]], 
-
-                               breaks = quantile(plot_data[[prs_var]], 
-
-                                               probs = c(0, 1/3, 2/3, 1)),
-
-                               labels = c("Low", "Medium", "High"),
-
-                               include.lowest = TRUE)
-
-  
-
-  # Calculate conversion rates
-
-  conversion_summary <- plot_data %>%
-
-    group_by(Age_Group_70, PRS_Tertile) %>%
-
+  # Pathway burden as percentage of total variance
+  pathway_burden <- df %>%
+    group_by(Subtype) %>%
     summarise(
-
       N = n(),
-
-      N_Converted = sum(Converted),
-
-      Conversion_Rate = mean(Converted) * 100,
-
-      SE = sqrt(Conversion_Rate * (100 - Conversion_Rate) / N),
-
+      across(all_of(prs_vars), ~ var(.x, na.rm = TRUE), .names = "Var_{.col}"),
       .groups = "drop"
-
+    ) %>%
+    mutate(
+      Total_Var = rowSums(select(., starts_with("Var_"))),
+      Myelin_Pct = Var_PRS_EOAD_Myelin / Total_Var * 100,
+      Oligo_Pct = Var_PRS_EOAD_Oligo / Total_Var * 100
     )
 
-  
+  # ANOVA across subtypes for key outcomes
+  anova_vars <- c("WMH_Log", "Ventricle_Norm", "AGE")
+  subtype_anova <- do.call(rbind, lapply(anova_vars, function(v) {
+    df_v <- df[!is.na(df[[v]]), ]
+    if (nrow(df_v) < 30) return(NULL)
+    aov_fit <- aov(as.formula(paste(v, "~ Subtype")), data = df_v)
+    data.frame(
+      Variable = v,
+      F_stat = summary(aov_fit)[[1]]["Subtype", "F value"],
+      P = summary(aov_fit)[[1]]["Subtype", "Pr(>F)"],
+      N = nrow(df_v)
+    )
+  }))
 
-  # Create plot
-
-  p <- ggplot(conversion_summary, 
-
-              aes(x = PRS_Tertile, y = Conversion_Rate, 
-
-                  fill = Age_Group_70)) +
-
-    geom_bar(stat = "identity", position = position_dodge(width = 0.8), 
-
-             width = 0.7) +
-
-    geom_errorbar(aes(ymin = Conversion_Rate - 1.96 * SE, 
-
-                     ymax = Conversion_Rate + 1.96 * SE),
-
-                 position = position_dodge(width = 0.8), 
-
-                 width = 0.25) +
-
-    scale_fill_manual(values = c("Younger (<70)" = "#3498db", 
-
-                                 "Older (≥70)" = "#e74c3c")) +
-
-    labs(
-
-      title = "MCI Conversion Rate by PRS and Age Group",
-
-      x = "Oligodendrocyte-PRS Tertile",
-
-      y = "Conversion Rate (%)",
-
-      fill = "Age Group"
-
-    ) +
-
-    theme_minimal() +
-
-    theme(
-
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-
-      axis.title = element_text(size = 12),
-
-      axis.text = element_text(size = 10),
-
-      legend.position = "top"
-
+  # Descriptive statistics by subtype
+  subtype_summary <- df %>%
+    group_by(Subtype) %>%
+    summarise(
+      N = n(),
+      Age_Mean = mean(AGE, na.rm = TRUE),
+      Age_SD = sd(AGE, na.rm = TRUE),
+      WMH_Mean = mean(WMH_Log, na.rm = TRUE),
+      WMH_SD = sd(WMH_Log, na.rm = TRUE),
+      Ventricle_Mean = mean(Ventricle_Norm, na.rm = TRUE),
+      Ventricle_SD = sd(Ventricle_Norm, na.rm = TRUE),
+      Hippo_Mean = mean(Hippo_Norm, na.rm = TRUE),
+      Hippo_SD = sd(Hippo_Norm, na.rm = TRUE),
+      Hippo_Vent_Ratio_Mean = mean(Hippo_Norm / Ventricle_Norm, na.rm = TRUE),
+      Hippo_Vent_Ratio_SD = sd(Hippo_Norm / Ventricle_Norm, na.rm = TRUE),
+      .groups = "drop"
     )
 
-  
-
-  # Save plot
-
-  dir.create(file.path(output_dir, "Figures"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  ggsave(file.path(output_dir, "Figures", 
-
-                  "MCI_Conversion_Age_Stratified.pdf"),
-
-         p, width = 8, height = 6)
-
-  
-
-  cat("Saved: MCI_Conversion_Age_Stratified.pdf\n")
-
-  
-
-  return(p)
-
+  list(
+    data = df,
+    centres = centres,
+    label_map = label_map,
+    concordance = concordance,
+    kappa = kappa_value,
+    kappa_p = kappa_p,
+    silhouette = avg_sil,
+    pathway_burden = pathway_burden,
+    subtype_anova = subtype_anova,
+    subtype_summary = subtype_summary
+  )
 }
 
 
-
-cat("\n=== Part 2 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - analyze_mci_conversion_logistic() [FIXED: Uses logistic regression]\n")
-
-cat("  - plot_mci_conversion_by_age()\n")
-
-cat("\nCRITICAL ISSUES ADDRESSED:\n")
-
-cat("  ✓ Issue #1: Changed from Cox (HR) to Logistic (OR)\n")
-
-cat("  ✓ Issue #3: Added <65 years sensitivity analysis\n")
-
 # ==============================================================================
-
-# ADNI Independent Cohort Validation Analysis - Part 3
-
-# PRS-Imaging Associations with Age Interactions
-
+# 7. REGIONAL CORTICAL THICKNESS ANALYSIS (68 DK REGIONS)
 # ==============================================================================
-
+#
+# ST codes from UCSFFSX51 data dictionary (FreeSurfer cross-sectional v5.1)
+# Cortical thickness uses TA suffix. Left hemisphere: ST12-ST56, Right: ST71-ST115
+# Reference: ADNI FreeSurfer Methods, UCSFFSX51_DICT.csv
 #
 
-# This part analyzes PRS associations with brain imaging measures,
-
-# testing for age-dependent effects (PRS × Age interactions)
-
-#
-
-# Key analyses:
-
-#   1. Hippocampal volume
-
-#   2. Ventricular volume
-
-#   3. White matter hyperintensities (WMH)
-
-#   4. Entorhinal cortex volume
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# PRS-Imaging Analysis with Age Interactions
-
-# ==============================================================================
-
-
-
-analyze_prs_imaging_age_interaction <- function(data, output_dir) {
-
-  
-
-  cat("\n=== PRS-Imaging Age Interaction Analysis ===\n")
-
-  
-
-  # Define PRS variables
-
-  prs_var <- "PRS_EOAD_Oligo"
-
-  if (!prs_var %in% colnames(data)) {
-
-    prs_candidates <- grep("PRS.*Oligo", colnames(data), value = TRUE)
-
-    if (length(prs_candidates) > 0) {
-
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      cat("Oligodendrocyte PRS not found\n")
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Define imaging variables
-
-  imaging_vars <- list(
-
-    Hippocampus = c("Hippo_ICV_Ratio", "Hippo_Total", "Hippocampus"),
-
-    Ventricles = c("Ventricle_ICV_Ratio", "Ventricle_Total", "Ventricles"),
-
-    WMH = c("WMH_Log", "WMH_ICV_Ratio", "ST128SV"),
-
-    Entorhinal = c("Entorhinal_ICV_Ratio", "Entorhinal_Total", "Entorhinal")
-
+get_dk_regions <- function() {
+  # Complete Desikan-Killiany atlas: 34 bilateral cortical regions (68 total)
+  # Each entry: c(left_hemisphere_ST_code, right_hemisphere_ST_code)
+  list(
+    bankssts                 = c("ST14TA", "ST73TA"),
+    caudalanteriorcingulate   = c("ST15TA", "ST74TA"),
+    caudalmiddlefrontal      = c("ST16TA", "ST75TA"),
+    cuneus                   = c("ST18TA", "ST77TA"),
+    entorhinal               = c("ST24TA", "ST83TA"),
+    fusiform                 = c("ST25TA", "ST84TA"),
+    inferiorparietal         = c("ST26TA", "ST85TA"),
+    inferiortemporal         = c("ST27TA", "ST86TA"),
+    isthmuscingulate         = c("ST28TA", "ST87TA"),
+    lateraloccipital         = c("ST30TA", "ST89TA"),
+    lateralorbitofrontal     = c("ST31TA", "ST90TA"),
+    lingual                  = c("ST32TA", "ST91TA"),
+    medialorbitofrontal      = c("ST33TA", "ST92TA"),
+    middletemporal           = c("ST34TA", "ST93TA"),
+    paracentral              = c("ST35TA", "ST94TA"),
+    parsopercularis          = c("ST36TA", "ST95TA"),
+    parsorbitalis            = c("ST38TA", "ST97TA"),
+    parstriangularis         = c("ST39TA", "ST98TA"),
+    pericalcarine            = c("ST40TA", "ST99TA"),
+    postcentral              = c("ST41TA", "ST100TA"),
+    posteriorcingulate       = c("ST42TA", "ST101TA"),
+    precentral               = c("ST43TA", "ST102TA"),
+    precuneus                = c("ST44TA", "ST103TA"),
+    rostralanteriorcingulate = c("ST45TA", "ST104TA"),
+    rostralmiddlefrontal     = c("ST46TA", "ST105TA"),
+    superiorfrontal          = c("ST47TA", "ST106TA"),
+    superiorparietal         = c("ST48TA", "ST107TA"),
+    superiortemporal         = c("ST49TA", "ST108TA"),
+    supramarginal            = c("ST50TA", "ST109TA"),
+    frontalpole              = c("ST23TA", "ST82TA"),
+    temporalpole             = c("ST52TA", "ST111TA"),
+    transversetemporal       = c("ST53TA", "ST112TA"),
+    insula                   = c("ST56TA", "ST115TA"),
+    parahippocampal          = c("ST37TA", "ST96TA")
   )
-
-  
-
-  # Find available imaging variables
-
-  imaging_available <- list()
-
-  for (region in names(imaging_vars)) {
-
-    for (var in imaging_vars[[region]]) {
-
-      if (var %in% colnames(data)) {
-
-        imaging_available[[region]] <- var
-
-        break
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (length(imaging_available) == 0) {
-
-    cat("No imaging variables found\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  cat("Available imaging variables:\n")
-
-  for (region in names(imaging_available)) {
-
-    cat(sprintf("  %s: %s\n", region, imaging_available[[region]]))
-
-  }
-
-  
-
-  # Identify ICV variable
-
-  icv_var <- NULL
-
-  if ("ICV" %in% colnames(data)) {
-
-    icv_var <- "ICV"
-
-  } else if ("ST10CV" %in% colnames(data)) {
-
-    icv_var <- "ST10CV"
-
-  }
-
-  
-
-  # Analysis function
-
-  run_prs_imaging_interaction <- function(data, prs_var, imaging_var, 
-
-                                         region_name, icv_var = NULL) {
-
-    
-
-    # Prepare covariates
-
-    covariates <- c("AGE", "PTGENDER", "APOE4")
-
-    if (!is.null(icv_var) && icv_var %in% colnames(data) && 
-
-        !grepl("ICV_Ratio", imaging_var)) {
-
-      covariates <- c(covariates, icv_var)
-
-    }
-
-    
-
-    vars_needed <- c(prs_var, imaging_var, covariates)
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-    data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 100) {
-
-      cat(sprintf("  %s: Insufficient data (N=%d)\n", 
-
-                 region_name, nrow(data_complete)))
-
-      return(NULL)
-
-    }
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    # Center age at 70 years
-
-    data_complete$Age_Centered <- data_complete$AGE - 70
-
-    
-
-    # Build formula for interaction model
-
-    formula_parts <- c("PRS_z * Age_Centered")
-
-    if ("PTGENDER" %in% vars_available) {
-
-      formula_parts <- c(formula_parts, "PTGENDER")
-
-    }
-
-    if ("APOE4" %in% vars_available) {
-
-      formula_parts <- c(formula_parts, "APOE4")
-
-    }
-
-    if (!is.null(icv_var) && icv_var %in% vars_available && 
-
-        !grepl("ICV_Ratio", imaging_var)) {
-
-      formula_parts <- c(formula_parts, icv_var)
-
-    }
-
-    
-
-    formula_str <- paste(imaging_var, "~", paste(formula_parts, collapse = " + "))
-
-    
-
-    # Fit model
-
-    model <- tryCatch(
-
-      lm(as.formula(formula_str), data = data_complete),
-
-      error = function(e) {
-
-        cat(sprintf("  %s: Model fitting error\n", region_name))
-
-        return(NULL)
-
-      }
-
-    )
-
-    
-
-    if (is.null(model)) return(NULL)
-
-    
-
-    # Extract results
-
-    coef_summary <- summary(model)$coefficients
-
-    
-
-    # Main effect of PRS
-
-    prs_beta <- coef_summary["PRS_z", "Estimate"]
-
-    prs_se <- coef_summary["PRS_z", "Std. Error"]
-
-    prs_p <- coef_summary["PRS_z", "Pr(>|t|)"]
-
-    
-
-    # Interaction effect
-
-    int_term <- grep("PRS_z:Age_Centered|Age_Centered:PRS_z", 
-
-                    rownames(coef_summary), value = TRUE)
-
-    
-
-    if (length(int_term) > 0) {
-
-      int_beta <- coef_summary[int_term[1], "Estimate"]
-
-      int_se <- coef_summary[int_term[1], "Std. Error"]
-
-      int_p <- coef_summary[int_term[1], "Pr(>|t|)"]
-
-    } else {
-
-      int_beta <- NA
-
-      int_se <- NA
-
-      int_p <- NA
-
-    }
-
-    
-
-    # Calculate effect sizes at different ages
-
-    # Younger (<70): Age_Centered = -5 (age 65)
-
-    # Older (≥70): Age_Centered = +5 (age 75)
-
-    effect_younger <- prs_beta + int_beta * (-5)
-
-    effect_older <- prs_beta + int_beta * 5
-
-    
-
-    cat(sprintf("  %s (N=%d):\n", region_name, nrow(data_complete)))
-
-    cat(sprintf("    Main effect: β=%.4f, P=%.3f\n", prs_beta, prs_p))
-
-    if (!is.na(int_p)) {
-
-      cat(sprintf("    Interaction: β=%.4f, P=%.3f\n", int_beta, int_p))
-
-      cat(sprintf("    Effect at age 65: β=%.4f\n", effect_younger))
-
-      cat(sprintf("    Effect at age 75: β=%.4f\n", effect_older))
-
-    }
-
-    
-
-    return(data.frame(
-
-      Region = region_name,
-
-      Imaging_Variable = imaging_var,
-
-      N = nrow(data_complete),
-
-      Beta_PRS = prs_beta,
-
-      SE_PRS = prs_se,
-
-      P_PRS = prs_p,
-
-      Beta_Interaction = int_beta,
-
-      SE_Interaction = int_se,
-
-      P_Interaction = int_p,
-
-      Effect_Age65 = effect_younger,
-
-      Effect_Age75 = effect_older,
-
-      stringsAsFactors = FALSE
-
-    ))
-
-  }
-
-  
-
-  # Run analysis for all available imaging variables
-
-  results_list <- list()
-
-  for (region in names(imaging_available)) {
-
-    result <- run_prs_imaging_interaction(
-
-      data, prs_var, imaging_available[[region]], region, icv_var
-
-    )
-
-    if (!is.null(result)) {
-
-      results_list[[region]] <- result
-
-    }
-
-  }
-
-  
-
-  if (length(results_list) == 0) {
-
-    cat("No valid results\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Combine results
-
-  results_df <- do.call(rbind, results_list)
-
-  rownames(results_df) <- NULL
-
-  
-
-  # FDR correction
-
-  results_df$P_PRS_FDR <- p.adjust(results_df$P_PRS, method = "fdr")
-
-  results_df$P_Interaction_FDR <- p.adjust(results_df$P_Interaction, 
-
-                                           method = "fdr", 
-
-                                           na.rm = TRUE)
-
-  
-
-  # Save results
-
-  dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  fwrite(results_df, 
-
-         file.path(output_dir, "Tables", "PRS_Imaging_Age_Interaction.csv"))
-
-  
-
-  cat("\n=== PRS-Imaging Analysis Complete ===\n")
-
-  cat("Significant main effects (P < 0.05):", 
-
-      sum(results_df$P_PRS < 0.05, na.rm = TRUE), "\n")
-
-  cat("Significant interactions (P < 0.05):", 
-
-      sum(results_df$P_Interaction < 0.05, na.rm = TRUE), "\n")
-
-  
-
-  return(results_df)
-
 }
 
-
-
-# ==============================================================================
-
-# Age-Stratified PRS-Imaging Analysis
-
-# ==============================================================================
-
-
-
-analyze_prs_imaging_age_stratified <- function(data, output_dir) {
-
-  
-
-  cat("\n=== Age-Stratified PRS-Imaging Analysis ===\n")
-
-  
-
-  # Define PRS and imaging variables
-
-  prs_var <- "PRS_EOAD_Oligo"
-
-  if (!prs_var %in% colnames(data)) {
-
-    prs_candidates <- grep("PRS.*Oligo", colnames(data), value = TRUE)
-
-    if (length(prs_candidates) > 0) {
-
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  imaging_vars <- list(
-
-    Hippocampus = c("Hippo_ICV_Ratio", "Hippo_Total", "Hippocampus"),
-
-    Ventricles = c("Ventricle_ICV_Ratio", "Ventricle_Total", "Ventricles"),
-
-    WMH = c("WMH_Log", "WMH_ICV_Ratio", "ST128SV")
-
-  )
-
-  
-
-  # Find available imaging variables
-
-  imaging_available <- list()
-
-  for (region in names(imaging_vars)) {
-
-    for (var in imaging_vars[[region]]) {
-
-      if (var %in% colnames(data)) {
-
-        imaging_available[[region]] <- var
-
-        break
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (!"Age_Group_70" %in% colnames(data)) {
-
-    cat("Age_Group_70 not available\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Identify ICV variable
-
-  icv_var <- NULL
-
-  if ("ICV" %in% colnames(data)) {
-
-    icv_var <- "ICV"
-
-  } else if ("ST10CV" %in% colnames(data)) {
-
-    icv_var <- "ST10CV"
-
-  }
-
-  
-
-  # Analysis function
-
-  run_stratified_analysis <- function(data, prs_var, imaging_var, 
-
-                                     region_name, age_group, icv_var = NULL) {
-
-    
-
-    # Filter by age group
-
-    data_age <- data[data$Age_Group_70 == age_group, ]
-
-    
-
-    # Prepare covariates
-
-    covariates <- c("AGE", "PTGENDER", "APOE4")
-
-    if (!is.null(icv_var) && icv_var %in% colnames(data) && 
-
-        !grepl("ICV_Ratio", imaging_var)) {
-
-      covariates <- c(covariates, icv_var)
-
-    }
-
-    
-
-    vars_needed <- c(prs_var, imaging_var, covariates)
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data_age)]
-
-    data_complete <- data_age[complete.cases(data_age[, vars_available, 
-
-                                                      drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 50) return(NULL)
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    # Build formula
-
-    formula_parts <- c("PRS_z")
-
-    if ("AGE" %in% vars_available) formula_parts <- c(formula_parts, "AGE")
-
-    if ("PTGENDER" %in% vars_available) formula_parts <- c(formula_parts, "PTGENDER")
-
-    if ("APOE4" %in% vars_available) formula_parts <- c(formula_parts, "APOE4")
-
-    if (!is.null(icv_var) && icv_var %in% vars_available && 
-
-        !grepl("ICV_Ratio", imaging_var)) {
-
-      formula_parts <- c(formula_parts, icv_var)
-
-    }
-
-    
-
-    formula_str <- paste(imaging_var, "~", paste(formula_parts, collapse = " + "))
-
-    
-
-    # Fit model
-
-    model <- tryCatch(
-
-      lm(as.formula(formula_str), data = data_complete),
-
-      error = function(e) NULL
-
-    )
-
-    
-
-    if (is.null(model)) return(NULL)
-
-    
-
-    # Extract results
-
-    coef_summary <- summary(model)$coefficients
-
-    if (!"PRS_z" %in% rownames(coef_summary)) return(NULL)
-
-    
-
-    return(data.frame(
-
-      Region = region_name,
-
-      Age_Group = age_group,
-
-      N = nrow(data_complete),
-
-      Beta = coef_summary["PRS_z", "Estimate"],
-
-      SE = coef_summary["PRS_z", "Std. Error"],
-
-      t_value = coef_summary["PRS_z", "t value"],
-
-      P_value = coef_summary["PRS_z", "Pr(>|t|)"],
-
-      stringsAsFactors = FALSE
-
-    ))
-
-  }
-
-  
-
-  # Run analysis for all combinations
-
-  results_list <- list()
-
-  for (region in names(imaging_available)) {
-
-    for (age_group in c("Younger (<70)", "Older (≥70)")) {
-
-      result <- run_stratified_analysis(
-
-        data, prs_var, imaging_available[[region]], region, age_group, icv_var
-
+run_brain_region_analysis <- function(data) {
+
+  dk_regions <- get_dk_regions()
+  ref_subtype <- "Background_Risk"
+
+  results <- list()
+  for (region in names(dk_regions)) {
+    codes <- dk_regions[[region]]
+    for (i in seq_along(codes)) {
+      hemi <- c("lh", "rh")[i]
+      st_code <- codes[i]
+      if (!st_code %in% colnames(data)) next
+
+      df <- data.frame(
+        Thickness = data[[st_code]],
+        Subtype = data$Subtype,
+        AGE = data$AGE,
+        PTGENDER = data$PTGENDER,
+        APOE4 = data$APOE4,
+        PTEDUCAT = data$PTEDUCAT,
+        stringsAsFactors = FALSE
       )
+      df <- df[complete.cases(df), ]
+      if (nrow(df) < 30) next
 
-      if (!is.null(result)) {
+      fit <- lm(Thickness ~ Subtype + AGE + PTGENDER + APOE4 + PTEDUCAT, data = df)
+      s <- summary(fit)$coefficients
 
-        results_list[[paste(region, age_group, sep = "_")]] <- result
-
+      for (sub in c("Oligo_Driven", "High_Abeta")) {
+        term <- paste0("Subtype", sub)
+        if (!term %in% rownames(s)) next
+        coefs <- s[term, ]
+        results[[length(results) + 1]] <- data.frame(
+          Region = region, Hemisphere = hemi, ST_Code = st_code,
+          Subtype = sub, Reference = ref_subtype,
+          Beta = coefs["Estimate"], SE = coefs["Std. Error"],
+          t_stat = coefs["t value"], P = coefs["Pr(>|t|)"],
+          N = nrow(df),
+          Cohens_d = coefs["t value"] / sqrt(nrow(df)),
+          stringsAsFactors = FALSE
+        )
       }
-
     }
-
   }
 
-  
+  res <- do.call(rbind, results)
+  if (!is.null(res) && nrow(res) > 0) {
+    res$P_FDR <- p.adjust(res$P, method = "BH")
+  }
+  return(res)
+}
 
-  if (length(results_list) > 0) {
+run_regional_age_prs_interaction <- function(data) {
 
-    results_df <- do.call(rbind, results_list)
+  dk_regions <- get_dk_regions()
+  prs_var <- "PRS_EOAD_Oligo"
 
-    rownames(results_df) <- NULL
+  results <- list()
+  for (region in names(dk_regions)) {
+    codes <- dk_regions[[region]]
+    for (i in seq_along(codes)) {
+      hemi <- c("lh", "rh")[i]
+      st_code <- codes[i]
+      if (!st_code %in% colnames(data)) next
 
-    
+      df <- data.frame(
+        Thickness = data[[st_code]],
+        PRS = data[[prs_var]],
+        AGE = data$AGE,
+        PTGENDER = data$PTGENDER,
+        APOE4 = data$APOE4,
+        PTEDUCAT = data$PTEDUCAT,
+        stringsAsFactors = FALSE
+      )
+      df <- df[complete.cases(df), ]
+      if (nrow(df) < 50) next
 
-    # FDR correction within each age group
-
-    results_df <- results_df %>%
-
-      group_by(Age_Group) %>%
-
-      mutate(P_FDR = p.adjust(P_value, method = "fdr")) %>%
-
-      ungroup()
-
-    
-
-    # Save results
-
-    fwrite(results_df, 
-
-           file.path(output_dir, "Tables", 
-
-                    "PRS_Imaging_Age_Stratified.csv"))
-
-    
-
-    cat("Age-stratified analysis complete\n")
-
-    return(results_df)
-
-  } else {
-
-    return(NULL)
-
+      fit <- lm(Thickness ~ PRS * AGE + PTGENDER + APOE4 + PTEDUCAT, data = df)
+      int_term <- "PRS:AGE"
+      if (int_term %in% rownames(summary(fit)$coefficients)) {
+        s <- summary(fit)$coefficients[int_term, ]
+        results[[length(results) + 1]] <- data.frame(
+          Region = region, Hemisphere = hemi, ST_Code = st_code,
+          Beta_Interaction = s["Estimate"], SE = s["Std. Error"],
+          P_Interaction = s["Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
   }
 
+  res <- do.call(rbind, results)
+  if (!is.null(res) && nrow(res) > 0) {
+    res$P_FDR <- p.adjust(res$P_Interaction, method = "BH")
+  }
+  return(res)
 }
 
 
+# ==============================================================================
+# 8. SUBCORTICAL STRUCTURE ANALYSIS
+# ==============================================================================
+#
+# ST codes from UCSFFSX51 data dictionary for subcortical volumes (SV suffix)
+# Verified against UCSFFSX51_DICT.csv:
+#   ST29SV = Left-Hippocampus, ST88SV = Right-Hippocampus
+#   ST13SV = Left-Amygdala,    ST72SV = Right-Amygdala
+#   ST19SV = Left-Caudate,     ST78SV = Right-Caudate
+#   ST36SV = Left-Putamen,     ST95SV = Right-Putamen
+#   ST34SV = Left-Pallidum,    ST93SV = Right-Pallidum
+#   ST54SV = Left-Thalamus,    ST113SV = Right-Thalamus
+#   ST12SV = Left-Accumbens,   ST71SV = Right-Accumbens
+#
+
+get_subcortical_regions <- function() {
+  list(
+    hippocampus      = c("ST29SV", "ST88SV"),
+    amygdala         = c("ST13SV", "ST72SV"),
+    caudate          = c("ST19SV", "ST78SV"),
+    putamen          = c("ST36SV", "ST95SV"),
+    pallidum         = c("ST34SV", "ST93SV"),
+    thalamus         = c("ST54SV", "ST113SV"),
+    accumbens        = c("ST12SV", "ST71SV")
+  )
+}
+
+run_subcortical_analysis <- function(data) {
+
+  subcort_regions <- get_subcortical_regions()
+  icv <- data$ST10CV
+  prs_var <- "PRS_EOAD_Oligo"
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
+
+  # --- Subtype-based analysis ---
+  subtype_results <- list()
+  for (region in names(subcort_regions)) {
+    codes <- subcort_regions[[region]]
+    for (i in seq_along(codes)) {
+      hemi <- c("lh", "rh")[i]
+      st_code <- codes[i]
+      if (!st_code %in% colnames(data)) next
+
+      vol_norm <- data[[st_code]] / icv * 1000
+      df <- data.frame(
+        Vol = vol_norm,
+        Subtype = data$Subtype,
+        AGE = data$AGE,
+        PTGENDER = data$PTGENDER,
+        APOE4 = data$APOE4,
+        PTEDUCAT = data$PTEDUCAT,
+        stringsAsFactors = FALSE
+      )
+      df <- df[complete.cases(df), ]
+      if (nrow(df) < 30) next
+
+      fit <- lm(Vol ~ Subtype + AGE + PTGENDER + APOE4 + PTEDUCAT, data = df)
+      s <- summary(fit)$coefficients
+
+      for (sub in c("Oligo_Driven", "High_Abeta")) {
+        term <- paste0("Subtype", sub)
+        if (!term %in% rownames(s)) next
+        coefs <- s[term, ]
+        subtype_results[[length(subtype_results) + 1]] <- data.frame(
+          Region = region, Hemisphere = hemi, ST_Code = st_code,
+          Subtype = sub, Reference = "Background_Risk",
+          Beta = coefs["Estimate"], SE = coefs["Std. Error"],
+          t_stat = coefs["t value"], P = coefs["Pr(>|t|)"],
+          N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+
+  # --- Age x PRS interaction ---
+  interaction_results <- list()
+  for (region in names(subcort_regions)) {
+    codes <- subcort_regions[[region]]
+    for (i in seq_along(codes)) {
+      hemi <- c("lh", "rh")[i]
+      st_code <- codes[i]
+      if (!st_code %in% colnames(data)) next
+
+      vol_norm <- data[[st_code]] / icv * 1000
+      df <- data.frame(
+        Vol = vol_norm,
+        PRS = data[[prs_var]],
+        AGE = data$AGE,
+        PTGENDER = data$PTGENDER,
+        APOE4 = data$APOE4,
+        PTEDUCAT = data$PTEDUCAT,
+        stringsAsFactors = FALSE
+      )
+      df <- df[complete.cases(df), ]
+      if (nrow(df) < 50) next
+
+      fit <- lm(Vol ~ PRS * AGE + PTGENDER + APOE4 + PTEDUCAT, data = df)
+      int_term <- "PRS:AGE"
+      if (int_term %in% rownames(summary(fit)$coefficients)) {
+        s <- summary(fit)$coefficients[int_term, ]
+        interaction_results[[length(interaction_results) + 1]] <- data.frame(
+          Region = region, Hemisphere = hemi, ST_Code = st_code,
+          Beta_Interaction = s["Estimate"], SE = s["Std. Error"],
+          P_Interaction = s["Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+
+  sub_df <- if (length(subtype_results) > 0) do.call(rbind, subtype_results) else data.frame()
+  int_df <- if (length(interaction_results) > 0) do.call(rbind, interaction_results) else data.frame()
+
+  if (nrow(sub_df) > 0) sub_df$P_FDR <- p.adjust(sub_df$P, method = "BH")
+  if (nrow(int_df) > 0) int_df$P_FDR <- p.adjust(int_df$P_Interaction, method = "BH")
+
+  list(subtype = sub_df, interaction = int_df)
+}
+
 
 # ==============================================================================
-
-# Visualization: PRS-Imaging Associations by Age
-
+# 9. CROSS-SECTIONAL PRS-COGNITION ANALYSIS
 # ==============================================================================
 
+run_cross_sectional_cognition <- function(data) {
+
+  prs_vars <- c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin", "PRS_EOAD_Microglia",
+                 "PRS_EOAD_Abeta", "PRS_EOAD_APP", "PRS_EOAD_Global",
+                 "PRS_EOAD_Lipid", "PRS_EOAD_TCell")
+  prs_vars <- prs_vars[prs_vars %in% colnames(data)]
+  outcomes <- c("MMSE", "CDRSB", "ADAS13", "RAVLT_immediate")
+  outcomes <- outcomes[outcomes %in% colnames(data)]
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
+
+  results <- list()
+  for (prs in prs_vars) {
+    for (outcome in outcomes) {
+      df <- data[complete.cases(data[, c(prs, outcome, covars)]), ]
+      if (nrow(df) < 30) next
+
+      fml <- as.formula(paste(outcome, "~", prs, "+",
+                              paste(covars, collapse = " + ")))
+      fit <- lm(fml, data = df)
+      s <- summary(fit)$coefficients
+      if (!prs %in% rownames(s)) next
+
+      results[[length(results) + 1]] <- data.frame(
+        PRS = prs, Outcome = outcome,
+        Beta = s[prs, "Estimate"], SE = s[prs, "Std. Error"],
+        P = s[prs, "Pr(>|t|)"], N = nrow(df),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  # Age-stratified cognition
+  strat_results <- list()
+  for (age_grp in c("Younger", "Older")) {
+    sub <- data[data$Age_Group == age_grp, ]
+    for (prs in prs_vars) {
+      for (outcome in outcomes) {
+        df <- sub[complete.cases(sub[, c(prs, outcome, covars)]), ]
+        if (nrow(df) < 20) next
+
+        fml <- as.formula(paste(outcome, "~", prs, "+",
+                                paste(covars, collapse = " + ")))
+        fit <- lm(fml, data = df)
+        s <- summary(fit)$coefficients
+        if (!prs %in% rownames(s)) next
+
+        strat_results[[length(strat_results) + 1]] <- data.frame(
+          Age_Group = age_grp, PRS = prs, Outcome = outcome,
+          Beta = s[prs, "Estimate"], SE = s[prs, "Std. Error"],
+          P = s[prs, "Pr(>|t|)"], N = nrow(df),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+
+  full_df <- do.call(rbind, results)
+  strat_df <- do.call(rbind, strat_results)
+  if (!is.null(full_df) && nrow(full_df) > 0) full_df$P_FDR <- p.adjust(full_df$P, method = "BH")
+  if (!is.null(strat_df) && nrow(strat_df) > 0) strat_df$P_FDR <- p.adjust(strat_df$P, method = "BH")
+
+  list(full = full_df, stratified = strat_df)
+}
 
 
-plot_prs_imaging_by_age <- function(data, prs_var = "PRS_EOAD_Oligo", 
+# ==============================================================================
+# 10. PATHWAY ENRICHMENT COMPARISON (MICROGLIA vs ABETA CLEARANCE)
+# ==============================================================================
+#
+# Compares standardized PRS effect sizes across pathways to quantify
+# relative enrichment of microglia/oligodendrocyte vs Abeta clearance
+# pathways in EOAD genetic architecture.
+#
 
-                                   imaging_var = "Hippo_ICV_Ratio",
+run_pathway_enrichment_comparison <- function(data) {
 
-                                   region_name = "Hippocampus",
+  # Pathway PRS variables grouped by biological function
+  microglia_oligo_prs <- c("PRS_EOAD_Microglia", "PRS_EOAD_Oligo", "PRS_EOAD_Myelin")
+  abeta_prs <- c("PRS_EOAD_Abeta", "PRS_EOAD_APP")
+  all_prs <- c(microglia_oligo_prs, abeta_prs, "PRS_EOAD_Global",
+               "PRS_EOAD_Lipid", "PRS_EOAD_TCell")
+  all_prs <- all_prs[all_prs %in% colnames(data)]
 
-                                   output_dir) {
+  outcomes <- c("WMH_Log", "Hippo_Norm", "ABETA", "TAU", "PTAU")
+  if ("STREM2" %in% colnames(data)) outcomes <- c(outcomes, "STREM2")
+  outcomes <- outcomes[outcomes %in% colnames(data)]
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
 
-  
+  # --- Standardized effect sizes for each PRS on each outcome ---
+  effect_results <- list()
+  for (prs in all_prs) {
+    for (outcome in outcomes) {
+      df <- data[complete.cases(data[, c(prs, outcome, covars)]), ]
+      if (nrow(df) < 30) next
 
-  # Prepare data
+      # Standardize PRS and outcome for comparable effect sizes
+      df$PRS_z <- scale(df[[prs]])
+      df$Outcome_z <- scale(df[[outcome]])
 
-  vars_needed <- c(prs_var, imaging_var, "AGE", "Age_Group_70")
+      fml <- as.formula(paste("Outcome_z ~ PRS_z +",
+                              paste(covars, collapse = " + ")))
+      fit <- tryCatch(lm(fml, data = df), error = function(e) NULL)
+      if (is.null(fit)) next
+      s <- summary(fit)$coefficients
+      if (!"PRS_z" %in% rownames(s)) next
 
-  vars_available <- vars_needed[vars_needed %in% colnames(data)]
+      pathway_group <- ifelse(prs %in% microglia_oligo_prs, "Microglia_Oligo",
+                       ifelse(prs %in% abeta_prs, "Abeta_Clearance", "Other"))
 
-  plot_data <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
+      effect_results[[length(effect_results) + 1]] <- data.frame(
+        PRS = prs, Pathway_Group = pathway_group, Outcome = outcome,
+        Std_Beta = s["PRS_z", "Estimate"],
+        SE = s["PRS_z", "Std. Error"],
+        P = s["PRS_z", "Pr(>|t|)"],
+        N = nrow(df),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
 
-  
+  effect_df <- do.call(rbind, effect_results)
+  if (nrow(effect_df) == 0) return(list(effects = data.frame(), enrichment = data.frame()))
+  effect_df$P_FDR <- p.adjust(effect_df$P, method = "BH")
 
-  if (nrow(plot_data) < 100) return(NULL)
-
-  
-
-  # Standardize PRS
-
-  plot_data$PRS_z <- scale(plot_data[[prs_var]])
-
-  
-
-  # Create scatter plot with regression lines
-
-  p <- ggplot(plot_data, aes(x = AGE, y = .data[[imaging_var]], 
-
-                             color = PRS_z)) +
-
-    geom_point(alpha = 0.3, size = 1.5) +
-
-    geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
-
-    scale_color_gradient2(low = "#3498db", mid = "#95a5a6", high = "#e74c3c",
-
-                         midpoint = 0, name = "PRS (z-score)") +
-
-    facet_wrap(~ Age_Group_70, scales = "free_x") +
-
-    labs(
-
-      title = paste("PRS-", region_name, " Association by Age Group", sep = ""),
-
-      x = "Age (years)",
-
-      y = paste(region_name, "Volume")
-
-    ) +
-
-    theme_minimal() +
-
-    theme(
-
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-
-      axis.title = element_text(size = 12),
-
-      strip.text = element_text(size = 11, face = "bold")
-
+  # --- Enrichment ratio: mean |Std_Beta| for microglia/oligo vs Abeta ---
+  enrichment <- effect_df %>%
+    filter(Pathway_Group %in% c("Microglia_Oligo", "Abeta_Clearance")) %>%
+    group_by(Pathway_Group, Outcome) %>%
+    summarise(
+      Mean_Abs_Beta = mean(abs(Std_Beta), na.rm = TRUE),
+      N_PRS = n(),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(names_from = Pathway_Group,
+                values_from = c(Mean_Abs_Beta, N_PRS)) %>%
+    mutate(
+      Enrichment_Ratio = Mean_Abs_Beta_Microglia_Oligo / Mean_Abs_Beta_Abeta_Clearance
     )
 
-  
-
-  # Save plot
-
-  dir.create(file.path(output_dir, "Figures"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  ggsave(file.path(output_dir, "Figures", 
-
-                  paste0("PRS_", region_name, "_Age_Interaction.pdf")),
-
-         p, width = 10, height = 5)
-
-  
-
-  return(p)
-
-}
-
-
-
-cat("\n=== Part 3 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - analyze_prs_imaging_age_interaction()\n")
-
-cat("  - analyze_prs_imaging_age_stratified()\n")
-
-cat("  - plot_prs_imaging_by_age()\n")
-
-# ==============================================================================
-
-# ADNI Independent Cohort Validation Analysis - Part 4
-
-# Unsupervised Genetic Subtyping and Pathway Burden Analysis
-
-# ==============================================================================
-
-#
-
-# This part addresses CRITICAL ISSUE #4:
-
-# - K-means clustering based on pathway-specific PRS
-
-# - Calculates pathway burden as PERCENTAGE of total variance
-
-# - Matches Results reporting: "18.3% of total variance"
-
-#
-
-# Key analyses:
-
-#   1. K-means clustering (k=3)
-
-#   2. Pathway burden percentage calculation
-
-#   3. Subtype characterization
-
-#   4. Hierarchical clustering validation
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# K-means Clustering with Pathway Burden Calculation
-
-# ==============================================================================
-
-
-
-perform_kmeans_clustering <- function(data, output_dir, k = 3, nstart = 50) {
-
-  
-
-  cat("\n=== K-means Clustering Analysis ===\n")
-
-  
-
-  # Define pathway-specific PRS variables
-
-  prs_pathways <- c(
-
-    "PRS_EOAD_Oligo",      # Oligodendrocyte
-
-    "PRS_EOAD_Myelin",     # Myelination
-
-    "PRS_EOAD_Microglia",  # Microglia
-
-    "PRS_EOAD_Abeta",      # Amyloid-beta clearance
-
-    "PRS_EOAD_APP",        # APP metabolism
-
-    "PRS_EOAD_Lipid"       # Lipid metabolism
-
-  )
-
-  
-
-  # Check availability
-
-  prs_available <- prs_pathways[prs_pathways %in% colnames(data)]
-
-  
-
-  if (length(prs_available) < 4) {
-
-    cat("Insufficient PRS variables for clustering\n")
-
-    cat("Available:", paste(prs_available, collapse = ", "), "\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  cat("Using", length(prs_available), "pathway-specific PRS:\n")
-
-  for (prs in prs_available) {
-
-    cat("  -", prs, "\n")
-
-  }
-
-  
-
-  # Extract PRS data
-
-  prs_data <- data[complete.cases(data[, prs_available, drop = FALSE]), 
-
-                   prs_available, drop = FALSE]
-
-  
-
-  cat("\nSample size for clustering:", nrow(prs_data), "\n")
-
-  
-
-  if (nrow(prs_data) < 100) {
-
-    cat("Insufficient sample size\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Standardize PRS (z-scores)
-
-  prs_scaled <- scale(prs_data)
-
-  
-
-  # Perform K-means clustering
-
-  set.seed(123)  # For reproducibility
-
-  kmeans_result <- kmeans(prs_scaled, centers = k, nstart = nstart, 
-
-                         iter.max = 100)
-
-  
-
-  cat("\nK-means clustering (k =", k, "):\n")
-
-  cat("  Total within-cluster SS:", round(kmeans_result$tot.withinss, 2), "\n")
-
-  cat("  Total SS:", round(kmeans_result$totss, 2), "\n")
-
-  cat("  Between-cluster SS:", round(kmeans_result$betweenss, 2), "\n")
-
-  cat("  Variance explained:", 
-
-      round(kmeans_result$betweenss / kmeans_result$totss * 100, 1), "%\n")
-
-  
-
-  # Cluster sizes
-
-  cluster_sizes <- table(kmeans_result$cluster)
-
-  cluster_props <- prop.table(cluster_sizes) * 100
-
-  
-
-  cat("\nCluster sizes:\n")
-
-  for (i in 1:k) {
-
-    cat(sprintf("  Cluster %d: N = %d (%.1f%%)\n", 
-
-               i, cluster_sizes[i], cluster_props[i]))
-
-  }
-
-  
-
-  # Assign cluster labels based on pathway profiles
-
-  cluster_labels <- assign_cluster_labels(kmeans_result$centers, prs_available)
-
-  
-
-  cat("\nCluster labels:\n")
-
-  for (i in 1:k) {
-
-    cat(sprintf("  Cluster %d: %s\n", i, cluster_labels[i]))
-
-  }
-
-  
-
-  # Add cluster assignment to data
-
-  data_clustered <- data[complete.cases(data[, prs_available, drop = FALSE]), ]
-
-  data_clustered$Cluster <- kmeans_result$cluster
-
-  data_clustered$Subtype <- factor(cluster_labels[kmeans_result$cluster],
-
-                                   levels = unique(cluster_labels))
-
-  
-
-  # ============================================================================
-
-  # CRITICAL ISSUE #4: Calculate Pathway Burden as PERCENTAGE
-
-  # ============================================================================
-
-  
-
-  cat("\n=== Pathway Burden Analysis (Percentage of Total Variance) ===\n")
-
-  
-
-  pathway_burden <- calculate_pathway_burden_percentage(
-
-    data_clustered, prs_available, cluster_labels
-
-  )
-
-  
-
-  if (!is.null(pathway_burden)) {
-
-    cat("\nPathway burden by subtype:\n")
-
-    print(pathway_burden)
-
-    
-
-    # Save pathway burden results
-
-    dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-               recursive = TRUE)
-
-    fwrite(pathway_burden, 
-
-           file.path(output_dir, "Tables", "Pathway_Burden_by_Subtype.csv"))
-
-    cat("\nSaved: Pathway_Burden_by_Subtype.csv\n")
-
-  }
-
-  
-
-  # Save cluster assignment
-
-  cluster_assignment <- data_clustered[, c("RID", "PTID", "Cluster", "Subtype")]
-
-  fwrite(cluster_assignment, 
-
-         file.path(output_dir, "Tables", "Subtype_Assignment.csv"))
-
-  cat("Saved: Subtype_Assignment.csv\n")
-
-  
-
-  # Save cluster centers
-
-  centers_df <- as.data.frame(kmeans_result$centers)
-
-  centers_df$Subtype <- cluster_labels
-
-  fwrite(centers_df, 
-
-         file.path(output_dir, "Tables", "Cluster_Centers.csv"),
-
-         row.names = TRUE)
-
-  cat("Saved: Cluster_Centers.csv\n")
-
-  
-
-  cat("\n=== K-means Clustering Complete ===\n")
-
-  
-
-  return(list(
-
-    kmeans = kmeans_result,
-
-    data = data_clustered,
-
-    labels = cluster_labels,
-
-    pathway_burden = pathway_burden
-
-  ))
-
-}
-
-
-
-# ==============================================================================
-
-# Assign Cluster Labels Based on Pathway Profiles
-
-# ==============================================================================
-
-
-
-assign_cluster_labels <- function(centers, prs_vars) {
-
-  
-
-  k <- nrow(centers)
-
-  labels <- character(k)
-
-  
-
-  # Find dominant pathway for each cluster
-
-  for (i in 1:k) {
-
-    profile <- centers[i, ]
-
-    
-
-    # Identify highest PRS values
-
-    top_pathways <- names(sort(profile, decreasing = TRUE)[1:2])
-
-    
-
-    # Assign label based on dominant pathway
-
-    if (any(grepl("Oligo|Myelin", top_pathways))) {
-
-      labels[i] <- "Oligo_Driven"
-
-    } else if (any(grepl("Abeta|APP", top_pathways))) {
-
-      labels[i] <- "High_Abeta"
-
-    } else if (all(abs(profile) < 0.5)) {
-
-      labels[i] <- "Background_Risk"
-
-    } else {
-
-      labels[i] <- paste0("Cluster_", i)
-
-    }
-
-  }
-
-  
-
-  # Ensure unique labels
-
-  if (length(unique(labels)) < k) {
-
-    for (i in 1:k) {
-
-      if (sum(labels == labels[i]) > 1) {
-
-        labels[i] <- paste0(labels[i], "_", i)
-
+  # --- Age-stratified enrichment ---
+  age_enrichment <- list()
+  for (age_grp in c("Younger", "Older")) {
+    sub <- data[data$Age_Group == age_grp, ]
+    for (prs in all_prs) {
+      for (outcome in outcomes) {
+        df <- sub[complete.cases(sub[, c(prs, outcome, covars)]), ]
+        if (nrow(df) < 20) next
+        df$PRS_z <- scale(df[[prs]])
+        df$Outcome_z <- scale(df[[outcome]])
+        fml <- as.formula(paste("Outcome_z ~ PRS_z +",
+                                paste(covars, collapse = " + ")))
+        fit <- tryCatch(lm(fml, data = df), error = function(e) NULL)
+        if (is.null(fit)) next
+        s <- summary(fit)$coefficients
+        if (!"PRS_z" %in% rownames(s)) next
+
+        pathway_group <- ifelse(prs %in% microglia_oligo_prs, "Microglia_Oligo",
+                         ifelse(prs %in% abeta_prs, "Abeta_Clearance", "Other"))
+
+        age_enrichment[[length(age_enrichment) + 1]] <- data.frame(
+          Age_Group = age_grp, PRS = prs, Pathway_Group = pathway_group,
+          Outcome = outcome,
+          Std_Beta = s["PRS_z", "Estimate"],
+          P = s["PRS_z", "Pr(>|t|)"],
+          N = nrow(df),
+          stringsAsFactors = FALSE
+        )
       }
-
     }
-
   }
+  age_df <- if (length(age_enrichment) > 0) do.call(rbind, age_enrichment) else data.frame()
 
-  
-
-  return(labels)
-
+  list(effects = effect_df, enrichment = enrichment, age_stratified = age_df)
 }
 
 
-
+# ==============================================================================
+# 11. EXPLORATORY BOUNDARY CONDITION ANALYSES
 # ==============================================================================
 
-# Calculate Pathway Burden as Percentage of Total Variance
+run_boundary_analyses <- function(data) {
 
-# CRITICAL ISSUE #4: This function calculates burden as PERCENTAGE
+  covars <- c("AGE", "PTGENDER", "APOE4", "PTEDUCAT")
 
-# ==============================================================================
-
-
-
-calculate_pathway_burden_percentage <- function(data, prs_vars, cluster_labels) {
-
-  
-
-  cat("\nCalculating pathway burden as percentage of total variance...\n")
-
-  
-
-  # Extract PRS data
-
-  prs_data <- data[, prs_vars, drop = FALSE]
-
-  prs_scaled <- scale(prs_data)
-
-  
-
-  # Calculate total variance (sum of variances of all PRS)
-
-  total_variance <- sum(apply(prs_scaled, 2, var))
-
-  
-
-  cat(sprintf("Total variance across all pathways: %.4f\n", total_variance))
-
-  
-
-  # Calculate burden for each subtype
-
-  results_list <- list()
-
-  
-
-  for (subtype in unique(cluster_labels)) {
-
-    
-
-    # Filter data for this subtype
-
-    subtype_data <- prs_scaled[data$Subtype == subtype, , drop = FALSE]
-
-    
-
-    if (nrow(subtype_data) < 10) next
-
-    
-
-    # Calculate variance explained by each pathway in this subtype
-
-    pathway_variances <- apply(subtype_data, 2, var)
-
-    
-
-    # Sum of pathway variances for this subtype
-
-    subtype_total_variance <- sum(pathway_variances)
-
-    
-
-    # Calculate percentage of total variance
-
-    burden_percentage <- (subtype_total_variance / total_variance) * 100
-
-    
-
-    # Also calculate mean absolute PRS across pathways
-
-    mean_abs_prs <- mean(abs(subtype_data))
-
-    
-
-    # Identify dominant pathways (top 2)
-
-    top_pathways <- names(sort(pathway_variances, decreasing = TRUE)[1:2])
-
-    
-
-    results_list[[subtype]] <- data.frame(
-
-      Subtype = subtype,
-
-      N = nrow(subtype_data),
-
-      Total_Variance = subtype_total_variance,
-
-      Burden_Percentage = burden_percentage,
-
-      Mean_Abs_PRS = mean_abs_prs,
-
-      Dominant_Pathway_1 = top_pathways[1],
-
-      Dominant_Pathway_2 = top_pathways[2],
-
+  # --- Unstratified conversion (pooled logistic) ---
+  dx_bl_col <- detect_dx_bl_col(data)
+  mci <- data[data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI"), ]
+  unstrat_results <- list()
+  for (prs in c("PRS_EOAD_Oligo", "PRS_EOAD_Myelin")) {
+    if (!prs %in% colnames(mci)) next
+    df <- mci[complete.cases(mci[, c(prs, "Converted", covars)]), ]
+    if (nrow(df) < 20 || sum(df$Converted) < 5) next
+    fml <- as.formula(paste("Converted ~", prs, "+",
+                            paste(covars, collapse = " + ")))
+    fit <- glm(fml, data = df, family = binomial)
+    ci <- confint.default(fit)
+    s <- summary(fit)$coefficients[prs, ]
+    unstrat_results[[prs]] <- data.frame(
+      PRS = prs,
+      OR = exp(s["Estimate"]),
+      OR_Lower = exp(ci[prs, 1]), OR_Upper = exp(ci[prs, 2]),
+      P = s["Pr(>|z|)"], N = nrow(df),
       stringsAsFactors = FALSE
-
     )
+  }
+  unstrat_df <- do.call(rbind, unstrat_results)
 
-    
+  # --- Pathway specificity (APP, T-cell as null results) ---
+  specificity_results <- list()
+  alt_prs <- c("PRS_EOAD_APP", "PRS_EOAD_TCell")
+  alt_prs <- alt_prs[alt_prs %in% colnames(data)]
+  spec_outcomes <- c("ABETA", "TAU", "PTAU", "Hippo_Norm", "WMH_Log")
+  for (prs in alt_prs) {
+    for (outcome in spec_outcomes) {
+      if (!outcome %in% colnames(data)) next
+      df <- data[complete.cases(data[, c(prs, outcome, covars)]), ]
+      if (nrow(df) < 30) next
+      fml <- as.formula(paste(outcome, "~", prs, "+",
+                              paste(covars, collapse = " + ")))
+      fit <- lm(fml, data = df)
+      s <- summary(fit)$coefficients[prs, ]
+      specificity_results[[length(specificity_results) + 1]] <- data.frame(
+        PRS = prs, Outcome = outcome,
+        Beta = s["Estimate"], SE = s["Std. Error"],
+        P = s["Pr(>|t|)"], N = nrow(df),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  specificity_df <- do.call(rbind, specificity_results)
 
-    cat(sprintf("  %s: %.1f%% of total variance (N=%d)\n", 
-
-               subtype, burden_percentage, nrow(subtype_data)))
-
+  # --- Continuous age x Oligo-PRS interaction on WMH ---
+  wmh_interaction <- NULL
+  df_wmh <- data[complete.cases(data[, c("PRS_EOAD_Oligo", "WMH_Log",
+                                          "AGE", "PTGENDER", "APOE4", "ST10CV")]), ]
+  if (nrow(df_wmh) > 50) {
+    fit <- lm(WMH_Log ~ PRS_EOAD_Oligo * AGE + PTGENDER + APOE4 + ST10CV,
+              data = df_wmh)
+    int_s <- summary(fit)$coefficients["PRS_EOAD_Oligo:AGE", ]
+    wmh_interaction <- data.frame(
+      Beta_Interaction = int_s["Estimate"],
+      SE = int_s["Std. Error"],
+      P = int_s["Pr(>|t|)"],
+      N = nrow(df_wmh)
+    )
   }
 
-  
-
-  if (length(results_list) > 0) {
-
-    results_df <- do.call(rbind, results_list)
-
-    rownames(results_df) <- NULL
-
-    return(results_df)
-
-  } else {
-
-    return(NULL)
-
-  }
-
+  list(
+    unstratified_conversion = unstrat_df,
+    pathway_specificity = specificity_df,
+    wmh_age_interaction = wmh_interaction
+  )
 }
 
 
-
+# ==============================================================================
+# 12. DEMOGRAPHICS TABLE
 # ==============================================================================
 
-# Hierarchical Clustering Validation
+generate_demographics <- function(data) {
 
-# ==============================================================================
+  dx_bl_col <- detect_dx_bl_col(data)
 
+  demo <- data %>%
+    mutate(DX_Group = case_when(
+      .data[[dx_bl_col]] %in% c("CN", "NL") ~ "CN",
+      .data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI") ~ "MCI",
+      .data[[dx_bl_col]] %in% c("Dementia", "AD") ~ "Dementia",
+      TRUE ~ "Other"
+    )) %>%
+    group_by(DX_Group) %>%
+    summarise(
+      N = n(),
+      Age_Mean = mean(AGE, na.rm = TRUE),
+      Age_SD = sd(AGE, na.rm = TRUE),
+      Female_N = sum(PTGENDER == "Female", na.rm = TRUE),
+      Female_Pct = mean(PTGENDER == "Female", na.rm = TRUE) * 100,
+      Education_Mean = mean(PTEDUCAT, na.rm = TRUE),
+      Education_SD = sd(PTEDUCAT, na.rm = TRUE),
+      APOE4_0 = sum(APOE4 == 0, na.rm = TRUE),
+      APOE4_1 = sum(APOE4 == 1, na.rm = TRUE),
+      APOE4_2 = sum(APOE4 == 2, na.rm = TRUE),
+      MMSE_Mean = mean(MMSE, na.rm = TRUE),
+      MMSE_SD = sd(MMSE, na.rm = TRUE),
+      .groups = "drop"
+    )
 
-
-validate_with_hierarchical_clustering <- function(data, prs_vars, 
-
-                                                 kmeans_labels, output_dir) {
-
-  
-
-  cat("\n=== Hierarchical Clustering Validation ===\n")
-
-  
-
-  # Extract PRS data
-
-  prs_data <- data[, prs_vars, drop = FALSE]
-
-  prs_scaled <- scale(prs_data)
-
-  
-
-  # Perform hierarchical clustering
-
-  dist_matrix <- dist(prs_scaled, method = "euclidean")
-
-  hclust_result <- hclust(dist_matrix, method = "ward.D2")
-
-  
-
-  # Cut tree to get same number of clusters as K-means
-
-  k <- length(unique(kmeans_labels))
-
-  hclust_labels <- cutree(hclust_result, k = k)
-
-  
-
-  # Calculate concordance
-
-  # Use adjusted Rand index
-
-  if (requireNamespace("mclust", quietly = TRUE)) {
-
-    ari <- mclust::adjustedRandIndex(kmeans_labels, hclust_labels)
-
-    cat(sprintf("Adjusted Rand Index: %.3f\n", ari))
-
-  }
-
-  
-
-  # Calculate simple concordance (percentage agreement)
-
-  # Need to match cluster labels first
-
-  concordance_matrix <- table(kmeans_labels, hclust_labels)
-
-  
-
-  # Find best matching
-
-  best_match <- apply(concordance_matrix, 1, which.max)
-
-  matched_hclust <- best_match[hclust_labels]
-
-  
-
-  concordance <- sum(kmeans_labels == matched_hclust) / length(kmeans_labels) * 100
-
-  
-
-  cat(sprintf("Concordance: %.1f%%\n", concordance))
-
-  
-
-  # Save results
-
-  validation_results <- data.frame(
-
-    Method = c("K-means", "Hierarchical"),
-
-    N_Clusters = k,
-
-    Concordance_Percent = concordance,
-
-    stringsAsFactors = FALSE
-
+  # MCI conversion summary
+  mci_data <- data[data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI"), ]
+  conversion_summary <- data.frame(
+    N_MCI = nrow(mci_data),
+    N_Converted = sum(mci_data$Converted, na.rm = TRUE),
+    Conversion_Rate = mean(mci_data$Converted, na.rm = TRUE) * 100,
+    Median_Followup_Years = unique(data$Median_Followup_Years)[1]
   )
 
-  
+  list(demographics = demo, conversion_summary = conversion_summary)
+}
 
-  if (exists("ari")) {
 
-    validation_results$Adjusted_Rand_Index <- c(NA, ari)
+# ==============================================================================
+# 13. VISUALIZATION FUNCTIONS
+# ==============================================================================
 
+plot_sliding_window <- function(sw_results, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  wmh <- sw_results$wmh
+  if (is.null(wmh) || nrow(wmh) == 0) return(NULL)
+
+  wmh$Sig <- ifelse(wmh$P_FDR < 0.05, "FDR < 0.05",
+                    ifelse(wmh$P < 0.05, "Nominal", "NS"))
+
+  p_wmh <- ggplot(wmh, aes(x = Centre_Age, y = Beta)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_ribbon(aes(ymin = Beta - 1.96 * SE, ymax = Beta + 1.96 * SE),
+                alpha = 0.2, fill = "#2166AC") +
+    geom_line(colour = "#2166AC", linewidth = 1) +
+    geom_point(aes(shape = Sig, fill = Sig), size = 3) +
+    scale_shape_manual(values = c("FDR < 0.05" = 21, "Nominal" = 22, "NS" = 23)) +
+    scale_fill_manual(values = c("FDR < 0.05" = "#2166AC",
+                                  "Nominal" = "#92C5DE", "NS" = "white")) +
+    labs(x = "Window centre age (years)", y = "Beta (Oligo-PRS on log-WMH)",
+         title = "Sliding-window: WMH burden") +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "bottom", legend.title = element_blank())
+
+  conv <- sw_results$conversion
+  p_conv <- NULL
+  if (!is.null(conv) && nrow(conv) > 0) {
+    conv$Sig <- ifelse(conv$P_FDR < 0.05, "FDR < 0.05",
+                       ifelse(conv$P < 0.05, "Nominal", "NS"))
+
+    p_conv <- ggplot(conv, aes(x = Centre_Age, y = OR)) +
+      geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
+      geom_ribbon(aes(ymin = OR_Lower, ymax = OR_Upper),
+                  alpha = 0.2, fill = "#B2182B") +
+      geom_line(colour = "#B2182B", linewidth = 1) +
+      geom_point(aes(shape = Sig, fill = Sig), size = 3) +
+      scale_shape_manual(values = c("FDR < 0.05" = 21, "Nominal" = 22, "NS" = 23)) +
+      scale_fill_manual(values = c("FDR < 0.05" = "#B2182B",
+                                    "Nominal" = "#F4A582", "NS" = "white")) +
+      labs(x = "Window centre age (years)", y = "Odds ratio (MCI-to-AD)",
+           title = "Sliding-window: MCI conversion risk") +
+      theme_classic(base_size = 12) +
+      theme(legend.position = "bottom", legend.title = element_blank())
   }
 
-  
+  if (!is.null(p_conv)) {
+    combined <- plot_grid(p_wmh, p_conv, ncol = 2, labels = c("A", "B"))
+    ggsave(file.path(output_dir, "sliding_window_combined.pdf"),
+           combined, width = 12, height = 5)
+  } else {
+    ggsave(file.path(output_dir, "sliding_window_wmh.pdf"),
+           p_wmh, width = 6, height = 5)
+  }
 
-  fwrite(validation_results, 
+  list(wmh = p_wmh, conversion = p_conv)
+}
 
-         file.path(output_dir, "Tables", 
+plot_forest <- function(conversion_results, output_dir = "figures") {
 
-                  "Hierarchical_Clustering_Concordance.csv"))
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  
+  strat <- conversion_results$stratified
+  if (is.null(strat) || nrow(strat) == 0) return(NULL)
 
-  cat("Saved: Hierarchical_Clustering_Concordance.csv\n")
+  strat$Label <- paste0(strat$PRS, " (", strat$Stratum, ")")
+  strat <- strat[order(strat$PRS, strat$Stratum), ]
 
-  
+  p <- ggplot(strat, aes(x = OR, y = reorder(Label, OR))) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+    geom_errorbarh(aes(xmin = OR_Lower, xmax = OR_Upper), height = 0.2) +
+    geom_point(aes(colour = Stratum), size = 3) +
+    scale_colour_manual(values = c("Younger" = "#D73027", "Older" = "#4575B4")) +
+    labs(x = "Odds ratio (95% CI)", y = NULL,
+         title = "Age-stratified MCI-to-AD conversion") +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "bottom")
 
-  # Save dendrogram
+  ggsave(file.path(output_dir, "forest_plot_conversion.pdf"), p, width = 8, height = 6)
+  return(p)
+}
 
-  pdf(file.path(output_dir, "Figures", "Hierarchical_Clustering_Dendrogram.pdf"),
+plot_cluster_heatmap <- function(subtype_results, output_dir = "figures") {
 
-      width = 10, height = 6)
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  plot(hclust_result, labels = FALSE, main = "Hierarchical Clustering Dendrogram",
+  centres <- subtype_results$centres
+  label_map <- subtype_results$label_map
+  rownames(centres) <- label_map[as.character(centres$Cluster)]
+  mat <- as.matrix(centres[, grep("^PRS_", colnames(centres))])
+  colnames(mat) <- gsub("PRS_EOAD_", "", colnames(mat))
 
-       xlab = "Samples", ylab = "Height")
-
-  rect.hclust(hclust_result, k = k, border = 2:4)
-
+  pdf(file.path(output_dir, "cluster_heatmap.pdf"), width = 8, height = 4)
+  pheatmap(mat, cluster_rows = FALSE, cluster_cols = FALSE,
+           color = colorRampPalette(rev(brewer.pal(9, "RdBu")))(100),
+           display_numbers = TRUE, number_format = "%.2f",
+           main = "Genetic subtype PRS profiles")
   dev.off()
-
-  
-
-  cat("Saved: Hierarchical_Clustering_Dendrogram.pdf\n")
-
-  
-
-  return(list(
-
-    hclust = hclust_result,
-
-    labels = hclust_labels,
-
-    concordance = concordance
-
-  ))
-
 }
 
+plot_dose_response <- function(dose_results, output_dir = "figures") {
 
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-# ==============================================================================
+  means_df <- dose_results$quantile_means
+  if (is.null(means_df) || nrow(means_df) == 0) return(NULL)
 
-# Subtype Characterization
-
-# ==============================================================================
-
-
-
-characterize_subtypes <- function(data, output_dir) {
-
-  
-
-  cat("\n=== Subtype Characterization ===\n")
-
-  
-
-  if (!"Subtype" %in% colnames(data)) {
-
-    cat("Subtype variable not found\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Define variables for comparison
-
-  demo_vars <- c("AGE", "PTGENDER", "PTEDUCAT", "APOE4")
-
-  cog_vars <- c("MMSE", "ADAS11", "ADAS13", "CDRSB")
-
-  imaging_vars <- c("Hippocampus", "Ventricles", "WholeBrain", "Entorhinal")
-
-  biomarker_vars <- c("CSF_ABETA42", "CSF_TAU", "CSF_PTAU", "CSF_STREM2")
-
-  
-
-  all_vars <- c(demo_vars, cog_vars, imaging_vars, biomarker_vars)
-
-  available_vars <- all_vars[all_vars %in% colnames(data)]
-
-  
-
-  # Compare subtypes
-
-  comparison_results <- list()
-
-  
-
-  for (var in available_vars) {
-
-    
-
-    # Remove missing values
-
-    data_complete <- data[!is.na(data[[var]]) & !is.na(data$Subtype), ]
-
-    
-
-    if (nrow(data_complete) < 30) next
-
-    
-
-    # Test for differences across subtypes
-
-    if (var == "PTGENDER") {
-
-      # Chi-square test for categorical variable
-
-      test_result <- tryCatch(
-
-        chisq.test(table(data_complete$Subtype, data_complete[[var]])),
-
-        error = function(e) NULL
-
-      )
-
-      if (!is.null(test_result)) {
-
-        comparison_results[[var]] <- data.frame(
-
-          Variable = var,
-
-          Test = "Chi-square",
-
-          Statistic = test_result$statistic,
-
-          P_value = test_result$p.value,
-
-          stringsAsFactors = FALSE
-
-        )
-
-      }
-
-    } else {
-
-      # ANOVA for continuous variables
-
-      formula_str <- paste(var, "~ Subtype")
-
-      test_result <- tryCatch(
-
-        summary(aov(as.formula(formula_str), data = data_complete)),
-
-        error = function(e) NULL
-
-      )
-
-      if (!is.null(test_result)) {
-
-        f_stat <- test_result[[1]]["Subtype", "F value"]
-
-        p_val <- test_result[[1]]["Subtype", "Pr(>F)"]
-
-        
-
-        comparison_results[[var]] <- data.frame(
-
-          Variable = var,
-
-          Test = "ANOVA",
-
-          Statistic = f_stat,
-
-          P_value = p_val,
-
-          stringsAsFactors = FALSE
-
-        )
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (length(comparison_results) > 0) {
-
-    results_df <- do.call(rbind, comparison_results)
-
-    rownames(results_df) <- NULL
-
-    results_df$P_FDR <- p.adjust(results_df$P_value, method = "fdr")
-
-    
-
-    # Save results
-
-    fwrite(results_df, 
-
-           file.path(output_dir, "Tables", "Subtype_Characteristics.csv"))
-
-    
-
-    cat("Subtype characterization complete\n")
-
-    cat("Significant differences (P < 0.05):", 
-
-        sum(results_df$P_value < 0.05), "\n")
-
-    
-
-    return(results_df)
-
+  # Focus on sTREM2 if available, otherwise first outcome
+  if ("STREM2" %in% means_df$Outcome) {
+    plot_data <- means_df[means_df$Outcome == "STREM2", ]
+    y_label <- "CSF sTREM2 (pg/mL)"
   } else {
-
-    return(NULL)
-
+    first_outcome <- unique(means_df$Outcome)[1]
+    plot_data <- means_df[means_df$Outcome == first_outcome, ]
+    y_label <- first_outcome
   }
 
-}
+  if (nrow(plot_data) == 0) return(NULL)
 
+  p <- ggplot(plot_data, aes(x = factor(PRS_Quantile), y = Mean,
+                              fill = APOE_Group)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    geom_errorbar(aes(ymin = Mean - SD / sqrt(N), ymax = Mean + SD / sqrt(N)),
+                  position = position_dodge(width = 0.8), width = 0.2) +
+    facet_wrap(~ PRS, scales = "free_y") +
+    scale_fill_brewer(palette = "Set2") +
+    labs(x = "PRS quartile", y = y_label,
+         title = "Dose-response: PRS quartile vs biomarker level") +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "bottom")
 
-
-# ==============================================================================
-
-# Visualization: Cluster Profiles
-
-# ==============================================================================
-
-
-
-plot_cluster_profiles <- function(kmeans_result, prs_vars, cluster_labels, 
-
-                                 output_dir) {
-
-  
-
-  # Prepare data for plotting
-
-  centers_df <- as.data.frame(kmeans_result$centers)
-
-  centers_df$Subtype <- cluster_labels
-
-  
-
-  # Reshape to long format
-
-  centers_long <- centers_df %>%
-
-    pivot_longer(cols = -Subtype, names_to = "Pathway", values_to = "PRS_Mean")
-
-  
-
-  # Clean pathway names
-
-  centers_long$Pathway <- gsub("PRS_EOAD_", "", centers_long$Pathway)
-
-  
-
-  # Create heatmap
-
-  p <- ggplot(centers_long, aes(x = Pathway, y = Subtype, fill = PRS_Mean)) +
-
-    geom_tile(color = "white", linewidth = 0.5) +
-
-    geom_text(aes(label = sprintf("%.2f", PRS_Mean)), 
-
-             color = "black", size = 3.5) +
-
-    scale_fill_gradient2(low = "#3498db", mid = "white", high = "#e74c3c",
-
-                        midpoint = 0, name = "Mean PRS\n(z-score)") +
-
-    labs(
-
-      title = "Pathway-Specific PRS Profiles by Genetic Subtype",
-
-      x = "Pathway",
-
-      y = "Genetic Subtype"
-
-    ) +
-
-    theme_minimal() +
-
-    theme(
-
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-
-      axis.text.y = element_text(size = 11),
-
-      axis.title = element_text(size = 12),
-
-      legend.position = "right"
-
-    )
-
-  
-
-  # Save plot
-
-  dir.create(file.path(output_dir, "Figures"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  ggsave(file.path(output_dir, "Figures", "Cluster_Profiles_Heatmap.pdf"),
-
-         p, width = 10, height = 6)
-
-  
-
-  cat("Saved: Cluster_Profiles_Heatmap.pdf\n")
-
-  
-
+  ggsave(file.path(output_dir, "dose_response_quartiles.pdf"),
+         p, width = 12, height = 8)
   return(p)
+}
 
+plot_brain_surface <- function(region_results, output_dir = "figures") {
+
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  if (!requireNamespace("ggseg", quietly = TRUE)) {
+    message("ggseg package required for brain surface maps. Install with:")
+    message("  install.packages('ggseg')")
+    # Fallback: save a heatmap-style table instead
+    if (!is.null(region_results) && nrow(region_results) > 0) {
+      fwrite(region_results, file.path(output_dir, "brain_region_results_table.csv"))
+    }
+    return(NULL)
+  }
+
+  library(ggseg)
+
+  for (sub in unique(region_results$Subtype)) {
+    sub_data <- region_results[region_results$Subtype == sub, ]
+
+    # Build ggseg-compatible label: "lh_bankssts" or "rh_bankssts"
+    sub_data$label <- paste0(sub_data$Hemisphere, "_", sub_data$Region)
+
+    # Merge with dk atlas data
+    atlas_data <- as_tibble(dk) %>%
+      select(label, hemi, region) %>%
+      distinct()
+
+    plot_df <- left_join(atlas_data, sub_data, by = "label")
+
+    p <- ggplot(plot_df) +
+      geom_brain(atlas = dk, aes(fill = t_stat),
+                 position = position_brain(hemi ~ side)) +
+      scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
+                           midpoint = 0, name = "t-statistic",
+                           na.value = "grey90") +
+      labs(title = paste("Regional cortical thickness:", sub, "vs Background_Risk")) +
+      theme_void(base_size = 12)
+
+    ggsave(file.path(output_dir, paste0("brain_surface_", sub, ".pdf")),
+           p, width = 10, height = 6)
+  }
 }
 
 
-
-cat("\n=== Part 4 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - perform_kmeans_clustering()\n")
-
-cat("  - calculate_pathway_burden_percentage() [FIXED: Calculates percentage]\n")
-
-cat("  - validate_with_hierarchical_clustering()\n")
-
-cat("  - characterize_subtypes()\n")
-
-cat("  - plot_cluster_profiles()\n")
-
-cat("\nCRITICAL ISSUE ADDRESSED:\n")
-
-cat("  ✓ Issue #4: Pathway burden calculated as PERCENTAGE of total variance\n")
-
+# ==============================================================================
+# 14. MAIN EXECUTION
 # ==============================================================================
 
-# ADNI Independent Cohort Validation Analysis - Part 5
+run_adni_validation <- function(clinical_file, prs_file, mri_file, csf_file,
+                                 strem2_file = NULL,
+                                 output_dir = "results/adni_validation") {
 
-# Regional Brain Volume Analysis (68 Regions)
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  fig_dir <- file.path(output_dir, "figures")
+  dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
 
-# ==============================================================================
+  cat("=== ADNI Independent Cohort Validation ===\n\n")
 
-#
+  # --- Step 1: Load and prepare data ---
+  cat("[1/12] Loading and integrating data...\n")
+  data <- load_adni_data(clinical_file, prs_file, mri_file, csf_file, strem2_file)
+  data <- create_derived_variables(data)
 
-# This part addresses CRITICAL ISSUE #5:
-
-# - Complete 68-region brain volume analysis
-
-# - Loops through all FreeSurfer regions
-
-# - Tests subtype differences and PRS associations
-
-#
-
-# Key analyses:
-
-#   1. Subtype-specific regional atrophy (68 regions)
-
-#   2. PRS-brain region associations (68 regions)
-
-#   3. PRS × Age interactions for key regions
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# Complete 68-Region Brain Volume Analysis
-
-# ==============================================================================
-
-
-
-analyze_68_brain_regions <- function(data, output_dir) {
-
-  
-
-  cat("\n=== 68-Region Brain Volume Analysis ===\n")
-
-  
-
-  # Define FreeSurfer region codes (ST codes)
-
-  # These correspond to the 68 cortical and subcortical regions
-
-  freesurfer_regions <- c(
-
-    # Cortical regions (left hemisphere: ST1-ST34)
-
-    paste0("ST", 1:34, "CV"),
-
-    # Cortical regions (right hemisphere: ST60-ST93)
-
-    paste0("ST", 60:93, "CV"),
-
-    # Subcortical regions
-
-    paste0("ST", c(29, 88), "SV")  # Hippocampus L/R
-
-  )
-
-  
-
-  # Find available regions in data
-
-  available_regions <- freesurfer_regions[freesurfer_regions %in% colnames(data)]
-
-  
-
-  cat("Total FreeSurfer regions available:", length(available_regions), "\n")
-
-  
-
-  if (length(available_regions) < 10) {
-
-    cat("Insufficient brain region data\n")
-
-    return(NULL)
-
+  dx_bl_col <- detect_dx_bl_col(data)
+  n_mci <- sum(data[[dx_bl_col]] %in% c("LMCI", "EMCI", "MCI"))
+  cat(sprintf("  Total N = %d\n", nrow(data)))
+  cat(sprintf("  MCI N = %d\n", n_mci))
+  cat(sprintf("  Longitudinal conversions = %d\n", sum(data$Converted, na.rm = TRUE)))
+  cat(sprintf("  Median follow-up = %.1f years\n", unique(data$Median_Followup_Years)[1]))
+  if ("STREM2" %in% colnames(data)) {
+    cat(sprintf("  sTREM2 available: N = %d\n", sum(!is.na(data$STREM2))))
   }
 
-  
+  # --- Step 2: APOE-stratified PRS-biomarker ---
+  cat("[2/12] APOE-stratified PRS-biomarker analysis...\n")
+  apoe_results <- run_apoe_stratified_analysis(data)
+  fwrite(apoe_results, file.path(output_dir, "apoe_stratified_results.csv"))
 
-  # Load region name mapping
+  # --- Step 2b: Dose-response analysis ---
+  cat("  Running dose-response (PRS quartile) analysis...\n")
+  dose_results <- run_dose_response_analysis(data)
+  if (nrow(dose_results$trend) > 0) {
+    fwrite(dose_results$trend, file.path(output_dir, "dose_response_trend.csv"))
+  }
+  if (nrow(dose_results$quantile_means) > 0) {
+    fwrite(dose_results$quantile_means, file.path(output_dir, "dose_response_quantile_means.csv"))
+  }
+  plot_dose_response(dose_results, fig_dir)
 
-  region_mapping <- create_region_name_mapping()
-
-  
-
-  # Identify ICV variable
-
-  icv_var <- NULL
-
-  if ("ICV" %in% colnames(data)) {
-
-    icv_var <- "ICV"
-
-  } else if ("ST10CV" %in% colnames(data)) {
-
-    icv_var <- "ST10CV"
-
+  # --- Step 3: Longitudinal MCI conversion ---
+  cat("[3/12] Longitudinal MCI-to-AD conversion analysis...\n")
+  conv_results <- run_conversion_analysis(data)
+  fwrite(conv_results$full, file.path(output_dir, "conversion_full.csv"))
+  fwrite(conv_results$stratified, file.path(output_dir, "conversion_stratified.csv"))
+  fwrite(conv_results$interaction, file.path(output_dir, "conversion_interaction.csv"))
+  if (!is.null(conv_results$sensitivity_under65)) {
+    fwrite(conv_results$sensitivity_under65,
+           file.path(output_dir, "conversion_sensitivity_under65.csv"))
   }
 
-  
+  # --- Step 4: PRS-neuroimaging with age interactions ---
+  cat("[4/12] PRS-neuroimaging associations...\n")
+  neuro_results <- run_neuroimaging_analysis(data)
+  fwrite(neuro_results$stratified, file.path(output_dir, "neuroimaging_stratified.csv"))
+  fwrite(neuro_results$interaction, file.path(output_dir, "neuroimaging_interaction.csv"))
 
-  if (is.null(icv_var)) {
+  # --- Step 5: Sliding-window analysis ---
+  cat("[5/12] Sliding-window age-dependency mapping...\n")
+  sw_results <- run_sliding_window(data)
+  if (nrow(sw_results$wmh) > 0) {
+    fwrite(sw_results$wmh, file.path(output_dir, "sliding_window_wmh.csv"))
+    cat(sprintf("  WMH peak centre age: %.0f years\n", sw_results$wmh$Peak_Centre_Age[1]))
+    cat(sprintf("  WMH dissipation: %.1f%%\n", sw_results$wmh$Dissipation_Pct[1]))
+  }
+  if (nrow(sw_results$conversion) > 0) {
+    fwrite(sw_results$conversion, file.path(output_dir, "sliding_window_conversion.csv"))
+    cat(sprintf("  Conversion peak centre age: %.0f years\n",
+                sw_results$conversion$Peak_Centre_Age[1]))
+    cat(sprintf("  Conversion dissipation: %.1f%%\n",
+                sw_results$conversion$Dissipation_Pct[1]))
+  }
+  plot_sliding_window(sw_results, fig_dir)
 
-    cat("Warning: ICV variable not found, results may be biased\n")
+  # --- Step 6: Genetic subtyping ---
+  cat("[6/12] Unsupervised genetic subtyping...\n")
+  subtype_results <- run_genetic_subtyping(data)
+  data <- subtype_results$data
+  cat(sprintf("  Concordance (k-means vs hierarchical): %.1f%%\n",
+              subtype_results$concordance * 100))
+  cat(sprintf("  Silhouette: %.3f\n", subtype_results$silhouette))
+  if (!is.na(subtype_results$kappa)) {
+    cat(sprintf("  Cohen's kappa: %.3f (P = %s)\n",
+                subtype_results$kappa,
+                format.pval(subtype_results$kappa_p, digits = 3)))
+  }
+  fwrite(subtype_results$pathway_burden,
+         file.path(output_dir, "pathway_burden.csv"))
+  fwrite(subtype_results$subtype_anova,
+         file.path(output_dir, "subtype_anova.csv"))
+  fwrite(subtype_results$subtype_summary,
+         file.path(output_dir, "subtype_summary.csv"))
+  plot_cluster_heatmap(subtype_results, fig_dir)
+  plot_forest(conv_results, fig_dir)
 
+  # --- Step 7: Regional cortical thickness ---
+  cat("[7/12] Regional cortical thickness analysis (68 DK regions)...\n")
+  region_results <- run_brain_region_analysis(data)
+  if (!is.null(region_results) && nrow(region_results) > 0) {
+    fwrite(region_results, file.path(output_dir, "cortical_thickness_subtype.csv"))
+    n_regions <- length(unique(paste(region_results$Region, region_results$Hemisphere)))
+    cat(sprintf("  Regions analysed: %d\n", n_regions))
+    plot_brain_surface(region_results, fig_dir)
   }
 
-  
-
-  # ============================================================================
-
-  # Analysis 1: Subtype-Specific Regional Atrophy
-
-  # ============================================================================
-
-  
-
-  cat("\n--- Subtype-Specific Regional Atrophy ---\n")
-
-  
-
-  if ("Subtype" %in% colnames(data)) {
-
-    subtype_results <- analyze_subtype_brain_regions(
-
-      data, available_regions, region_mapping, icv_var
-
-    )
-
-    
-
-    if (!is.null(subtype_results)) {
-
-      # Save results
-
-      dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-                 recursive = TRUE)
-
-      fwrite(subtype_results, 
-
-             file.path(output_dir, "Tables", 
-
-                      "Subtype_Brain_Region_Effects.csv"))
-
-      cat("Saved: Subtype_Brain_Region_Effects.csv\n")
-
-      
-
-      # Print significant findings
-
-      sig_results <- subtype_results[subtype_results$P_value < 0.05, ]
-
-      cat(sprintf("Significant regions (P < 0.05): %d / %d\n", 
-
-                 nrow(sig_results), nrow(subtype_results)))
-
-      
-
-      if (nrow(sig_results) > 0) {
-
-        cat("\nTop 5 most significant regions:\n")
-
-        top_results <- sig_results[order(sig_results$P_value), ][1:min(5, nrow(sig_results)), ]
-
-        print(top_results[, c("Region_Name", "Comparison", "Beta", "P_value")])
-
-      }
-
-    }
-
-  } else {
-
-    cat("Subtype variable not available\n")
-
-    subtype_results <- NULL
-
+  region_interaction <- run_regional_age_prs_interaction(data)
+  if (!is.null(region_interaction) && nrow(region_interaction) > 0) {
+    fwrite(region_interaction,
+           file.path(output_dir, "cortical_thickness_age_prs_interaction.csv"))
   }
 
-  
-
-  # ============================================================================
-
-  # Analysis 2: PRS-Brain Region Associations
-
-  # ============================================================================
-
-  
-
-  cat("\n--- PRS-Brain Region Associations ---\n")
-
-  
-
-  # Define PRS variable
-
-  prs_var <- "PRS_EOAD_Oligo"
-
-  if (!prs_var %in% colnames(data)) {
-
-    prs_candidates <- grep("PRS.*Oligo", colnames(data), value = TRUE)
-
-    if (length(prs_candidates) > 0) {
-
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      cat("Oligodendrocyte PRS not found\n")
-
-      prs_var <- NULL
-
-    }
-
+  # --- Step 8: Subcortical structures ---
+  cat("[8/12] Subcortical structure analysis...\n")
+  subcort_results <- run_subcortical_analysis(data)
+  if (nrow(subcort_results$subtype) > 0) {
+    fwrite(subcort_results$subtype,
+           file.path(output_dir, "subcortical_volume_subtype.csv"))
+  }
+  if (nrow(subcort_results$interaction) > 0) {
+    fwrite(subcort_results$interaction,
+           file.path(output_dir, "subcortical_volume_age_prs_interaction.csv"))
   }
 
-  
-
-  if (!is.null(prs_var)) {
-
-    prs_results <- analyze_prs_brain_regions(
-
-      data, prs_var, available_regions, region_mapping, icv_var
-
-    )
-
-    
-
-    if (!is.null(prs_results)) {
-
-      # Save results
-
-      fwrite(prs_results, 
-
-             file.path(output_dir, "Tables", 
-
-                      "PRS_Brain_Region_Effects.csv"))
-
-      cat("Saved: PRS_Brain_Region_Effects.csv\n")
-
-      
-
-      # Print significant findings
-
-      sig_results <- prs_results[prs_results$P_Main < 0.05, ]
-
-      cat(sprintf("Significant PRS associations (P < 0.05): %d / %d\n", 
-
-                 nrow(sig_results), nrow(prs_results)))
-
-      
-
-      # Check for age interactions
-
-      sig_interactions <- prs_results[!is.na(prs_results$P_Interaction) & 
-
-                                     prs_results$P_Interaction < 0.05, ]
-
-      if (nrow(sig_interactions) > 0) {
-
-        cat(sprintf("Significant PRS × Age interactions: %d\n", 
-
-                   nrow(sig_interactions)))
-
-        cat("\nTop regions with age interactions:\n")
-
-        print(sig_interactions[order(sig_interactions$P_Interaction), ][1:min(3, nrow(sig_interactions)), 
-
-                              c("Region_Name", "Beta_Interaction", "P_Interaction")])
-
-      }
-
-    }
-
-  } else {
-
-    prs_results <- NULL
-
+  # --- Step 9: Cross-sectional PRS-cognition ---
+  cat("[9/12] Cross-sectional PRS-cognition analysis...\n")
+  cognition_results <- run_cross_sectional_cognition(data)
+  if (!is.null(cognition_results$full) && nrow(cognition_results$full) > 0) {
+    fwrite(cognition_results$full,
+           file.path(output_dir, "cognition_prs_full.csv"))
+  }
+  if (!is.null(cognition_results$stratified) && nrow(cognition_results$stratified) > 0) {
+    fwrite(cognition_results$stratified,
+           file.path(output_dir, "cognition_prs_stratified.csv"))
   }
 
-  
+  # --- Step 10: Pathway enrichment comparison ---
+  cat("[10/12] Pathway enrichment comparison (microglia vs Abeta)...\n")
+  enrichment_results <- run_pathway_enrichment_comparison(data)
+  if (nrow(enrichment_results$effects) > 0) {
+    fwrite(enrichment_results$effects,
+           file.path(output_dir, "pathway_enrichment_effects.csv"))
+  }
+  if (nrow(enrichment_results$enrichment) > 0) {
+    fwrite(enrichment_results$enrichment,
+           file.path(output_dir, "pathway_enrichment_ratio.csv"))
+  }
+  if (!is.null(enrichment_results$age_stratified) && nrow(enrichment_results$age_stratified) > 0) {
+    fwrite(enrichment_results$age_stratified,
+           file.path(output_dir, "pathway_enrichment_age_stratified.csv"))
+  }
 
-  # ============================================================================
+  # --- Step 11: Boundary condition analyses ---
+  cat("[11/12] Exploratory boundary condition analyses...\n")
+  boundary_results <- run_boundary_analyses(data)
+  if (!is.null(boundary_results$unstratified_conversion)) {
+    fwrite(boundary_results$unstratified_conversion,
+           file.path(output_dir, "boundary_unstratified_conversion.csv"))
+  }
+  if (!is.null(boundary_results$pathway_specificity)) {
+    fwrite(boundary_results$pathway_specificity,
+           file.path(output_dir, "boundary_pathway_specificity.csv"))
+  }
 
-  # Save Region Mapping
+  # --- Step 12: Demographics ---
+  cat("[12/12] Generating demographics table...\n")
+  demo_results <- generate_demographics(data)
+  fwrite(demo_results$demographics, file.path(output_dir, "demographics.csv"))
+  fwrite(demo_results$conversion_summary,
+         file.path(output_dir, "conversion_summary.csv"))
 
-  # ============================================================================
+  # --- Summary ---
+  cat("\n=== Analysis complete ===\n")
+  cat(sprintf("Results saved to: %s\n", output_dir))
+  cat(sprintf("Figures saved to: %s\n", fig_dir))
 
-  
-
-  fwrite(region_mapping, 
-
-         file.path(output_dir, "Tables", "ST_to_Brain_Region_Mapping.csv"))
-
-  cat("Saved: ST_to_Brain_Region_Mapping.csv\n")
-
-  
-
-  cat("\n=== 68-Region Analysis Complete ===\n")
-
-  
-
-  return(list(
-
-    subtype = subtype_results,
-
-    prs = prs_results,
-
-    mapping = region_mapping
-
+  invisible(list(
+    data = data,
+    apoe = apoe_results,
+    dose_response = dose_results,
+    conversion = conv_results,
+    neuroimaging = neuro_results,
+    sliding_window = sw_results,
+    subtypes = subtype_results,
+    cortical_thickness = region_results,
+    cortical_interaction = region_interaction,
+    subcortical = subcort_results,
+    cognition = cognition_results,
+    pathway_enrichment = enrichment_results,
+    boundary = boundary_results,
+    demographics = demo_results
   ))
-
 }
 
-
-
 # ==============================================================================
-
-# Analyze Subtype Differences Across 68 Regions
-
+# EXAMPLE USAGE
 # ==============================================================================
-
-
-
-analyze_subtype_brain_regions <- function(data, regions, mapping, icv_var) {
-
-  
-
-  cat("Analyzing subtype differences across", length(regions), "regions...\n")
-
-  
-
-  # Prepare covariates
-
-  covariates <- c("AGE", "PTGENDER")
-
-  if (!is.null(icv_var) && icv_var %in% colnames(data)) {
-
-    covariates <- c(covariates, icv_var)
-
-  }
-
-  
-
-  # Define reference subtype (typically Background_Risk)
-
-  if ("Background_Risk" %in% data$Subtype) {
-
-    data$Subtype <- relevel(factor(data$Subtype), ref = "Background_Risk")
-
-  }
-
-  
-
-  results_list <- list()
-
-  
-
-  # Loop through all regions
-
-  for (region_code in regions) {
-
-    
-
-    # Prepare data
-
-    vars_needed <- c(region_code, "Subtype", covariates)
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-    data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 100) next
-
-    
-
-    # Build formula
-
-    formula_parts <- c("Subtype")
-
-    if ("AGE" %in% vars_available) formula_parts <- c(formula_parts, "AGE")
-
-    if ("PTGENDER" %in% vars_available) formula_parts <- c(formula_parts, "PTGENDER")
-
-    if (!is.null(icv_var) && icv_var %in% vars_available) {
-
-      formula_parts <- c(formula_parts, icv_var)
-
-    }
-
-    
-
-    formula_str <- paste(region_code, "~", paste(formula_parts, collapse = " + "))
-
-    
-
-    # Fit model
-
-    model <- tryCatch(
-
-      lm(as.formula(formula_str), data = data_complete),
-
-      error = function(e) NULL
-
-    )
-
-    
-
-    if (is.null(model)) next
-
-    
-
-    # Extract results for each subtype comparison
-
-    coef_summary <- summary(model)$coefficients
-
-    subtype_terms <- grep("^Subtype", rownames(coef_summary), value = TRUE)
-
-    
-
-    for (term in subtype_terms) {
-
-      # Get region name
-
-      region_name <- mapping$Region_Name[mapping$ST_Code == region_code]
-
-      if (length(region_name) == 0) region_name <- region_code
-
-      
-
-      # Extract comparison name
-
-      comparison <- gsub("Subtype", "", term)
-
-      
-
-      results_list[[paste(region_code, term, sep = "_")]] <- data.frame(
-
-        ST_Code = region_code,
-
-        Region_Name = region_name,
-
-        Comparison = comparison,
-
-        N = nrow(data_complete),
-
-        Beta = coef_summary[term, "Estimate"],
-
-        SE = coef_summary[term, "Std. Error"],
-
-        t_value = coef_summary[term, "t value"],
-
-        P_value = coef_summary[term, "Pr(>|t|)"],
-
-        stringsAsFactors = FALSE
-
-      )
-
-    }
-
-  }
-
-  
-
-  if (length(results_list) == 0) return(NULL)
-
-  
-
-  # Combine results
-
-  results_df <- do.call(rbind, results_list)
-
-  rownames(results_df) <- NULL
-
-  
-
-  # FDR correction within each comparison
-
-  results_df <- results_df %>%
-
-    group_by(Comparison) %>%
-
-    mutate(P_FDR = p.adjust(P_value, method = "fdr")) %>%
-
-    ungroup()
-
-  
-
-  return(results_df)
-
-}
-
-
-
-# ==============================================================================
-
-# Analyze PRS Associations Across 68 Regions
-
-# ==============================================================================
-
-
-
-analyze_prs_brain_regions <- function(data, prs_var, regions, mapping, icv_var) {
-
-  
-
-  cat("Analyzing PRS associations across", length(regions), "regions...\n")
-
-  
-
-  # Prepare covariates
-
-  covariates <- c("AGE", "PTGENDER", "APOE4")
-
-  if (!is.null(icv_var) && icv_var %in% colnames(data)) {
-
-    covariates <- c(covariates, icv_var)
-
-  }
-
-  
-
-  results_list <- list()
-
-  
-
-  # Loop through all regions
-
-  for (region_code in regions) {
-
-    
-
-    # Prepare data
-
-    vars_needed <- c(region_code, prs_var, covariates)
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-    data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 100) next
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    # Center age
-
-    data_complete$Age_Centered <- data_complete$AGE - 70
-
-    
-
-    # Build formula with interaction
-
-    formula_parts <- c("PRS_z * Age_Centered")
-
-    if ("PTGENDER" %in% vars_available) formula_parts <- c(formula_parts, "PTGENDER")
-
-    if ("APOE4" %in% vars_available) formula_parts <- c(formula_parts, "APOE4")
-
-    if (!is.null(icv_var) && icv_var %in% vars_available) {
-
-      formula_parts <- c(formula_parts, icv_var)
-
-    }
-
-    
-
-    formula_str <- paste(region_code, "~", paste(formula_parts, collapse = " + "))
-
-    
-
-    # Fit model
-
-    model <- tryCatch(
-
-      lm(as.formula(formula_str), data = data_complete),
-
-      error = function(e) NULL
-
-    )
-
-    
-
-    if (is.null(model)) next
-
-    
-
-    # Extract results
-
-    coef_summary <- summary(model)$coefficients
-
-    
-
-    # Main effect
-
-    beta_main <- coef_summary["PRS_z", "Estimate"]
-
-    se_main <- coef_summary["PRS_z", "Std. Error"]
-
-    p_main <- coef_summary["PRS_z", "Pr(>|t|)"]
-
-    
-
-    # Interaction effect
-
-    int_term <- grep("PRS_z:Age_Centered|Age_Centered:PRS_z", 
-
-                    rownames(coef_summary), value = TRUE)
-
-    
-
-    if (length(int_term) > 0) {
-
-      beta_int <- coef_summary[int_term[1], "Estimate"]
-
-      se_int <- coef_summary[int_term[1], "Std. Error"]
-
-      p_int <- coef_summary[int_term[1], "Pr(>|t|)"]
-
-    } else {
-
-      beta_int <- NA
-
-      se_int <- NA
-
-      p_int <- NA
-
-    }
-
-    
-
-    # Get region name
-
-    region_name <- mapping$Region_Name[mapping$ST_Code == region_code]
-
-    if (length(region_name) == 0) region_name <- region_code
-
-    
-
-    results_list[[region_code]] <- data.frame(
-
-      ST_Code = region_code,
-
-      Region_Name = region_name,
-
-      N = nrow(data_complete),
-
-      Beta_Main = beta_main,
-
-      SE_Main = se_main,
-
-      P_Main = p_main,
-
-      Beta_Interaction = beta_int,
-
-      SE_Interaction = se_int,
-
-      P_Interaction = p_int,
-
-      stringsAsFactors = FALSE
-
-    )
-
-  }
-
-  
-
-  if (length(results_list) == 0) return(NULL)
-
-  
-
-  # Combine results
-
-  results_df <- do.call(rbind, results_list)
-
-  rownames(results_df) <- NULL
-
-  
-
-  # FDR correction
-
-  results_df$P_Main_FDR <- p.adjust(results_df$P_Main, method = "fdr")
-
-  results_df$P_Interaction_FDR <- p.adjust(results_df$P_Interaction, 
-
-                                           method = "fdr", na.rm = TRUE)
-
-  
-
-  return(results_df)
-
-}
-
-
-
-# ==============================================================================
-
-# Create Region Name Mapping
-
-# ==============================================================================
-
-
-
-create_region_name_mapping <- function() {
-
-  
-
-  # FreeSurfer region codes and names
-
-  # This is a simplified mapping - full mapping would include all 68 regions
-
-  
-
-  mapping <- data.frame(
-
-    ST_Code = c(
-
-      # Left hemisphere cortical
-
-      "ST1CV", "ST2CV", "ST3CV", "ST4CV", "ST5CV",
-
-      "ST6CV", "ST7CV", "ST8CV", "ST9CV", "ST10CV",
-
-      "ST11CV", "ST12CV", "ST13CV", "ST14CV", "ST15CV",
-
-      "ST16CV", "ST17CV", "ST18CV", "ST19CV", "ST20CV",
-
-      "ST21CV", "ST22CV", "ST23CV", "ST24CV", "ST25CV",
-
-      "ST26CV", "ST27CV", "ST28CV", "ST29SV", "ST30CV",
-
-      "ST31CV", "ST32CV", "ST33CV", "ST34CV",
-
-      # Right hemisphere cortical
-
-      "ST60CV", "ST61CV", "ST62CV", "ST63CV", "ST64CV",
-
-      "ST65CV", "ST66CV", "ST67CV", "ST68CV", "ST69CV",
-
-      "ST70CV", "ST71CV", "ST72CV", "ST73CV", "ST74CV",
-
-      "ST75CV", "ST76CV", "ST77CV", "ST78CV", "ST79CV",
-
-      "ST80CV", "ST81CV", "ST82CV", "ST83CV", "ST84CV",
-
-      "ST85CV", "ST86CV", "ST87CV", "ST88SV", "ST89CV",
-
-      "ST90CV", "ST91CV", "ST92CV", "ST93CV"
-
-    ),
-
-    Region_Name = c(
-
-      # Left hemisphere
-
-      "L_Bankssts", "L_Caudal_Anterior_Cingulate", "L_Caudal_Middle_Frontal",
-
-      "L_Cuneus", "L_Entorhinal", "L_Fusiform", "L_Inferior_Parietal",
-
-      "L_Inferior_Temporal", "L_Isthmus_Cingulate", "L_Lateral_Occipital",
-
-      "L_Lateral_Orbitofrontal", "L_Lingual", "L_Medial_Orbitofrontal",
-
-      "L_Middle_Temporal", "L_Parahippocampal", "L_Paracentral",
-
-      "L_Pars_Opercularis", "L_Pars_Orbitalis", "L_Pars_Triangularis",
-
-      "L_Pericalcarine", "L_Postcentral", "L_Posterior_Cingulate",
-
-      "L_Precentral", "L_Precuneus", "L_Rostral_Anterior_Cingulate",
-
-      "L_Rostral_Middle_Frontal", "L_Superior_Frontal", "L_Superior_Parietal",
-
-      "L_Hippocampus", "L_Superior_Temporal", "L_Supramarginal",
-
-      "L_Frontal_Pole", "L_Temporal_Pole", "L_Transverse_Temporal",
-
-      # Right hemisphere
-
-      "R_Bankssts", "R_Caudal_Anterior_Cingulate", "R_Caudal_Middle_Frontal",
-
-      "R_Cuneus", "R_Entorhinal", "R_Fusiform", "R_Inferior_Parietal",
-
-      "R_Inferior_Temporal", "R_Isthmus_Cingulate", "R_Lateral_Occipital",
-
-      "R_Lateral_Orbitofrontal", "R_Lingual", "R_Medial_Orbitofrontal",
-
-      "R_Middle_Temporal", "R_Parahippocampal", "R_Paracentral",
-
-      "R_Pars_Opercularis", "R_Pars_Orbitalis", "R_Pars_Triangularis",
-
-      "R_Pericalcarine", "R_Postcentral", "R_Posterior_Cingulate",
-
-      "R_Precentral", "R_Precuneus", "R_Rostral_Anterior_Cingulate",
-
-      "R_Rostral_Middle_Frontal", "R_Superior_Frontal", "R_Superior_Parietal",
-
-      "R_Hippocampus", "R_Superior_Temporal", "R_Supramarginal",
-
-      "R_Frontal_Pole", "R_Temporal_Pole", "R_Transverse_Temporal"
-
-    ),
-
-    stringsAsFactors = FALSE
-
-  )
-
-  
-
-  return(mapping)
-
-}
-
-
-
-cat("\n=== Part 5 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - analyze_68_brain_regions() [FIXED: Complete 68-region analysis]\n")
-
-cat("  - analyze_subtype_brain_regions()\n")
-
-cat("  - analyze_prs_brain_regions()\n")
-
-cat("  - create_region_name_mapping()\n")
-
-cat("\nCRITICAL ISSUE ADDRESSED:\n")
-
-cat("  ✓ Issue #5: Complete 68-region brain volume analysis implemented\n")
-
-# ==============================================================================
-
-# ADNI Independent Cohort Validation Analysis - Part 6
-
-# APOE ε4 Genotype-Stratified Analysis
-
-# ==============================================================================
-
 #
-
-# This part addresses CRITICAL ISSUE #2:
-
-# - APOE ε4 genotype stratification (ε4/ε4, ε4/ε3 or ε4/ε2, non-carriers)
-
-# - Reports specific β values for each genotype group
-
-# - Matches Results reporting: "ε4 homozygotes demonstrated β=-781.8, P=0.022"
-
-#
-
-# Key analyses:
-
-#   1. PRS-biomarker associations stratified by APOE genotype
-
-#   2. PRS-imaging associations stratified by APOE genotype
-
-#   3. MCI conversion risk stratified by APOE genotype
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# APOE Genotype-Stratified PRS-Biomarker Analysis
-
-# ==============================================================================
-
-
-
-analyze_apoe_genotype_stratified_biomarkers <- function(data, output_dir) {
-
-  
-
-  cat("\n=== APOE Genotype-Stratified PRS-Biomarker Analysis ===\n")
-
-  
-
-  # Check APOE_Group availability
-
-  if (!"APOE_Group" %in% colnames(data)) {
-
-    cat("APOE_Group variable not available\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Define PRS variables
-
-  prs_vars <- c(
-
-    "PRS_EOAD_Microglia",
-
-    "PRS_EOAD_Oligo",
-
-    "PRS_EOAD_Myelin",
-
-    "PRS_EOAD_Abeta",
-
-    "PRS_EOAD_Global"
-
-  )
-
-  prs_available <- prs_vars[prs_vars %in% colnames(data)]
-
-  
-
-  # Define biomarker variables
-
-  biomarker_vars <- c("CSF_STREM2", "CSF_ABETA42", "CSF_TAU", "CSF_PTAU")
-
-  biomarker_available <- biomarker_vars[biomarker_vars %in% colnames(data)]
-
-  
-
-  if (length(prs_available) == 0 || length(biomarker_available) == 0) {
-
-    cat("Insufficient PRS or biomarker variables\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  cat("Analyzing", length(prs_available), "PRS ×", 
-
-      length(biomarker_available), "biomarkers\n")
-
-  cat("APOE genotype groups:\n")
-
-  print(table(data$APOE_Group))
-
-  
-
-  # Analysis function
-
-  run_genotype_stratified <- function(data, prs_var, biomarker_var) {
-
-    
-
-    # Prepare data
-
-    vars_needed <- c(prs_var, biomarker_var, "APOE_Group", "AGE", "PTGENDER")
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-    data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 50) return(NULL)
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    results_list <- list()
-
-    
-
-    # Analyze each APOE genotype group
-
-    for (apoe_group in levels(data_complete$APOE_Group)) {
-
-      
-
-      group_data <- data_complete[data_complete$APOE_Group == apoe_group, ]
-
-      
-
-      if (nrow(group_data) < 20) {
-
-        cat(sprintf("  %s × %s - %s: N=%d (insufficient)\n",
-
-                   prs_var, biomarker_var, apoe_group, nrow(group_data)))
-
-        next
-
-      }
-
-      
-
-      # Build formula
-
-      formula_parts <- c("PRS_z")
-
-      if ("AGE" %in% vars_available) formula_parts <- c(formula_parts, "AGE")
-
-      if ("PTGENDER" %in% vars_available) formula_parts <- c(formula_parts, "PTGENDER")
-
-      
-
-      formula_str <- paste(biomarker_var, "~", paste(formula_parts, collapse = " + "))
-
-      
-
-      # Fit model
-
-      model <- tryCatch(
-
-        lm(as.formula(formula_str), data = group_data),
-
-        error = function(e) NULL
-
-      )
-
-      
-
-      if (is.null(model)) next
-
-      
-
-      # Extract results
-
-      coef_summary <- summary(model)$coefficients
-
-      if (!"PRS_z" %in% rownames(coef_summary)) next
-
-      
-
-      beta <- coef_summary["PRS_z", "Estimate"]
-
-      se <- coef_summary["PRS_z", "Std. Error"]
-
-      t_val <- coef_summary["PRS_z", "t value"]
-
-      p_val <- coef_summary["PRS_z", "Pr(>|t|)"]
-
-      
-
-      # Calculate 95% CI
-
-      ci_lower <- beta - 1.96 * se
-
-      ci_upper <- beta + 1.96 * se
-
-      
-
-      results_list[[apoe_group]] <- data.frame(
-
-        PRS = prs_var,
-
-        Biomarker = biomarker_var,
-
-        APOE_Genotype = apoe_group,
-
-        N = nrow(group_data),
-
-        Beta = beta,
-
-        SE = se,
-
-        CI_Lower = ci_lower,
-
-        CI_Upper = ci_upper,
-
-        t_value = t_val,
-
-        P_value = p_val,
-
-        stringsAsFactors = FALSE
-
-      )
-
-      
-
-      cat(sprintf("  %s × %s - %s: N=%d, β=%.2f, P=%.3f\n",
-
-                 prs_var, biomarker_var, apoe_group, 
-
-                 nrow(group_data), beta, p_val))
-
-    }
-
-    
-
-    if (length(results_list) > 0) {
-
-      return(do.call(rbind, results_list))
-
-    } else {
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Run analysis for all combinations
-
-  all_results <- list()
-
-  for (prs in prs_available) {
-
-    for (bio in biomarker_available) {
-
-      result <- run_genotype_stratified(data, prs, bio)
-
-      if (!is.null(result)) {
-
-        all_results[[paste(prs, bio, sep = "_")]] <- result
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (length(all_results) == 0) {
-
-    cat("No valid results\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Combine results
-
-  results_df <- do.call(rbind, all_results)
-
-  rownames(results_df) <- NULL
-
-  
-
-  # FDR correction within each APOE genotype group
-
-  results_df <- results_df %>%
-
-    group_by(APOE_Genotype) %>%
-
-    mutate(P_FDR = p.adjust(P_value, method = "fdr")) %>%
-
-    ungroup()
-
-  
-
-  # Save results
-
-  dir.create(file.path(output_dir, "Tables"), showWarnings = FALSE, 
-
-             recursive = TRUE)
-
-  fwrite(results_df, 
-
-         file.path(output_dir, "Tables", 
-
-                  "APOE_Genotype_Stratified_PRS_Biomarker.csv"))
-
-  
-
-  cat("\n=== APOE Genotype-Stratified Analysis Complete ===\n")
-
-  cat("Total associations tested:", nrow(results_df), "\n")
-
-  cat("Significant associations (P < 0.05):", 
-
-      sum(results_df$P_value < 0.05), "\n")
-
-  
-
-  # Highlight key finding: Microglia-PRS × sTREM2 in ε4/ε4
-
-  key_result <- results_df[results_df$PRS == "PRS_EOAD_Microglia" & 
-
-                           results_df$Biomarker == "CSF_STREM2" &
-
-                           results_df$APOE_Genotype == "ε4/ε4", ]
-
-  
-
-  if (nrow(key_result) > 0) {
-
-    cat("\n*** KEY FINDING ***\n")
-
-    cat("Microglia-PRS × sTREM2 in ε4/ε4 homozygotes:\n")
-
-    cat(sprintf("  N = %d\n", key_result$N))
-
-    cat(sprintf("  β = %.1f pg/mL\n", key_result$Beta))
-
-    cat(sprintf("  95%% CI: [%.1f, %.1f]\n", 
-
-               key_result$CI_Lower, key_result$CI_Upper))
-
-    cat(sprintf("  P = %.3f\n", key_result$P_value))
-
-  }
-
-  
-
-  return(results_df)
-
-}
-
-
-
-# ==============================================================================
-
-# APOE Genotype-Stratified PRS-Imaging Analysis
-
-# ==============================================================================
-
-
-
-analyze_apoe_genotype_stratified_imaging <- function(data, output_dir) {
-
-  
-
-  cat("\n=== APOE Genotype-Stratified PRS-Imaging Analysis ===\n")
-
-  
-
-  # Check APOE_Group availability
-
-  if (!"APOE_Group" %in% colnames(data)) {
-
-    cat("APOE_Group variable not available\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Define PRS variable
-
-  prs_var <- "PRS_EOAD_Oligo"
-
-  if (!prs_var %in% colnames(data)) {
-
-    prs_candidates <- grep("PRS.*Oligo", colnames(data), value = TRUE)
-
-    if (length(prs_candidates) > 0) {
-
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Define imaging variables
-
-  imaging_vars <- list(
-
-    Hippocampus = c("Hippo_ICV_Ratio", "Hippo_Total", "Hippocampus"),
-
-    Ventricles = c("Ventricle_ICV_Ratio", "Ventricle_Total", "Ventricles"),
-
-    WMH = c("WMH_Log", "WMH_ICV_Ratio", "ST128SV")
-
-  )
-
-  
-
-  # Find available imaging variables
-
-  imaging_available <- list()
-
-  for (region in names(imaging_vars)) {
-
-    for (var in imaging_vars[[region]]) {
-
-      if (var %in% colnames(data)) {
-
-        imaging_available[[region]] <- var
-
-        break
-
-      }
-
-    }
-
-  }
-
-  
-
-  if (length(imaging_available) == 0) {
-
-    cat("No imaging variables found\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Identify ICV variable
-
-  icv_var <- NULL
-
-  if ("ICV" %in% colnames(data)) {
-
-    icv_var <- "ICV"
-
-  } else if ("ST10CV" %in% colnames(data)) {
-
-    icv_var <- "ST10CV"
-
-  }
-
-  
-
-  # Analysis function
-
-  run_genotype_imaging <- function(data, prs_var, imaging_var, region_name, icv_var) {
-
-    
-
-    # Prepare covariates
-
-    covariates <- c("AGE", "PTGENDER")
-
-    if (!is.null(icv_var) && icv_var %in% colnames(data) && 
-
-        !grepl("ICV_Ratio", imaging_var)) {
-
-      covariates <- c(covariates, icv_var)
-
-    }
-
-    
-
-    vars_needed <- c(prs_var, imaging_var, "APOE_Group", covariates)
-
-    vars_available <- vars_needed[vars_needed %in% colnames(data)]
-
-    data_complete <- data[complete.cases(data[, vars_available, drop = FALSE]), ]
-
-    
-
-    if (nrow(data_complete) < 50) return(NULL)
-
-    
-
-    # Standardize PRS
-
-    data_complete$PRS_z <- scale(data_complete[[prs_var]])
-
-    
-
-    results_list <- list()
-
-    
-
-    # Analyze each APOE genotype group
-
-    for (apoe_group in levels(data_complete$APOE_Group)) {
-
-      
-
-      group_data <- data_complete[data_complete$APOE_Group == apoe_group, ]
-
-      
-
-      if (nrow(group_data) < 30) next
-
-      
-
-      # Build formula
-
-      formula_parts <- c("PRS_z")
-
-      if ("AGE" %in% vars_available) formula_parts <- c(formula_parts, "AGE")
-
-      if ("PTGENDER" %in% vars_available) formula_parts <- c(formula_parts, "PTGENDER")
-
-      if (!is.null(icv_var) && icv_var %in% vars_available && 
-
-          !grepl("ICV_Ratio", imaging_var)) {
-
-        formula_parts <- c(formula_parts, icv_var)
-
-      }
-
-      
-
-      formula_str <- paste(imaging_var, "~", paste(formula_parts, collapse = " + "))
-
-      
-
-      # Fit model
-
-      model <- tryCatch(
-
-        lm(as.formula(formula_str), data = group_data),
-
-        error = function(e) NULL
-
-      )
-
-      
-
-      if (is.null(model)) next
-
-      
-
-      # Extract results
-
-      coef_summary <- summary(model)$coefficients
-
-      if (!"PRS_z" %in% rownames(coef_summary)) next
-
-      
-
-      results_list[[apoe_group]] <- data.frame(
-
-        Region = region_name,
-
-        APOE_Genotype = apoe_group,
-
-        N = nrow(group_data),
-
-        Beta = coef_summary["PRS_z", "Estimate"],
-
-        SE = coef_summary["PRS_z", "Std. Error"],
-
-        P_value = coef_summary["PRS_z", "Pr(>|t|)"],
-
-        stringsAsFactors = FALSE
-
-      )
-
-    }
-
-    
-
-    if (length(results_list) > 0) {
-
-      return(do.call(rbind, results_list))
-
-    } else {
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Run analysis for all imaging variables
-
-  all_results <- list()
-
-  for (region in names(imaging_available)) {
-
-    result <- run_genotype_imaging(data, prs_var, imaging_available[[region]], 
-
-                                   region, icv_var)
-
-    if (!is.null(result)) {
-
-      all_results[[region]] <- result
-
-    }
-
-  }
-
-  
-
-  if (length(all_results) > 0) {
-
-    results_df <- do.call(rbind, all_results)
-
-    rownames(results_df) <- NULL
-
-    
-
-    # FDR correction
-
-    results_df <- results_df %>%
-
-      group_by(APOE_Genotype) %>%
-
-      mutate(P_FDR = p.adjust(P_value, method = "fdr")) %>%
-
-      ungroup()
-
-    
-
-    # Save results
-
-    fwrite(results_df, 
-
-           file.path(output_dir, "Tables", 
-
-                    "APOE_Genotype_Stratified_PRS_Imaging.csv"))
-
-    
-
-    cat("APOE genotype-stratified imaging analysis complete\n")
-
-    return(results_df)
-
-  } else {
-
-    return(NULL)
-
-  }
-
-}
-
-
-
-# ==============================================================================
-
-# APOE Genotype-Stratified MCI Conversion Analysis
-
-# ==============================================================================
-
-
-
-analyze_apoe_genotype_stratified_conversion <- function(data, output_dir) {
-
-  
-
-  cat("\n=== APOE Genotype-Stratified MCI Conversion Analysis ===\n")
-
-  
-
-  # Filter MCI patients
-
-  mci_data <- data[data$DX_bl == "MCI" & !is.na(data$DX_bl), ]
-
-  
-
-  if (nrow(mci_data) < 50) {
-
-    cat("Insufficient MCI patients\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Define conversion outcome
-
-  if (!"Converted" %in% colnames(mci_data)) {
-
-    if ("DX" %in% colnames(mci_data)) {
-
-      mci_data$Converted <- ifelse(mci_data$DX == "Dementia", 1, 0)
-
-    } else {
-
-      cat("Conversion outcome not available\n")
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Check APOE_Group availability
-
-  if (!"APOE_Group" %in% colnames(mci_data)) {
-
-    cat("APOE_Group variable not available\n")
-
-    return(NULL)
-
-  }
-
-  
-
-  # Define PRS variable
-
-  prs_var <- "PRS_EOAD_Oligo"
-
-  if (!prs_var %in% colnames(mci_data)) {
-
-    prs_candidates <- grep("PRS.*Oligo", colnames(mci_data), value = TRUE)
-
-    if (length(prs_candidates) > 0) {
-
-      prs_var <- prs_candidates[1]
-
-    } else {
-
-      return(NULL)
-
-    }
-
-  }
-
-  
-
-  # Prepare data
-
-  vars_needed <- c(prs_var, "Converted", "APOE_Group", "AGE", "PTGENDER")
-
-  vars_available <- vars_needed[vars_needed %in% colnames(mci_data)]
-
-  mci_complete <- mci_data[complete.cases(mci_data[, vars_available, drop = FALSE]), ]
-
-  
-
-  cat("MCI cohort size:", nrow(mci_complete), "\n")
-
-  cat("APOE genotype distribution:\n")
-
-  print(table(mci_complete$APOE_Group))
-
-  
-
-  # Standardize PRS
-
-  mci_complete$PRS_z <- scale(mci_complete[[prs_var]])
-
-  
-
-  results_list <- list()
-
-  
-
-  # Analyze each APOE genotype group
-
-  for (apoe_group in levels(mci_complete$APOE_Group)) {
-
-    
-
-    group_data <- mci_complete[mci_complete$APOE_Group == apoe_group, ]
-
-    
-
-    if (nrow(group_data) < 20 || sum(group_data$Converted) < 5) {
-
-      cat(sprintf("  %s: N=%d, Conversions=%d (insufficient)\n",
-
-                 apoe_group, nrow(group_data), sum(group_data$Converted)))
-
-      next
-
-    }
-
-    
-
-    # Fit logistic regression model
-
-    model <- glm(Converted ~ PRS_z + AGE + PTGENDER,
-
-                data = group_data,
-
-                family = binomial(link = "logit"))
-
-    
-
-    # Extract results
-
-    coef_summary <- summary(model)$coefficients
-
-    if (!"PRS_z" %in% rownames(coef_summary)) next
-
-    
-
-    or <- exp(coef_summary["PRS_z", "Estimate"])
-
-    ci_lower <- exp(coef_summary["PRS_z", "Estimate"] - 
-
-                   1.96 * coef_summary["PRS_z", "Std. Error"])
-
-    ci_upper <- exp(coef_summary["PRS_z", "Estimate"] + 
-
-                   1.96 * coef_summary["PRS_z", "Std. Error"])
-
-    
-
-    results_list[[apoe_group]] <- data.frame(
-
-      APOE_Genotype = apoe_group,
-
-      N = nrow(group_data),
-
-      N_Converted = sum(group_data$Converted),
-
-      OR = or,
-
-      CI_Lower = ci_lower,
-
-      CI_Upper = ci_upper,
-
-      P_value = coef_summary["PRS_z", "Pr(>|z|)"],
-
-      stringsAsFactors = FALSE
-
-    )
-
-    
-
-    cat(sprintf("  %s: N=%d, Conversions=%d, OR=%.2f, P=%.3f\n",
-
-               apoe_group, nrow(group_data), sum(group_data$Converted),
-
-               or, coef_summary["PRS_z", "Pr(>|z|)"]))
-
-  }
-
-  
-
-  if (length(results_list) > 0) {
-
-    results_df <- do.call(rbind, results_list)
-
-    rownames(results_df) <- NULL
-
-    
-
-    # Save results
-
-    fwrite(results_df, 
-
-           file.path(output_dir, "Tables", 
-
-                    "APOE_Genotype_Stratified_MCI_Conversion.csv"))
-
-    
-
-    cat("APOE genotype-stratified conversion analysis complete\n")
-
-    return(results_df)
-
-  } else {
-
-    return(NULL)
-
-  }
-
-}
-
-
-
-cat("\n=== Part 6 Complete ===\n")
-
-cat("Functions defined:\n")
-
-cat("  - analyze_apoe_genotype_stratified_biomarkers() [FIXED: Proper genotype stratification]\n")
-
-cat("  - analyze_apoe_genotype_stratified_imaging()\n")
-
-cat("  - analyze_apoe_genotype_stratified_conversion()\n")
-
-cat("\nCRITICAL ISSUE ADDRESSED:\n")
-
-cat("  ✓ Issue #2: APOE ε4 genotype stratification (ε4/ε4, ε4/ε3 or ε4/ε2, non-carriers)\n")
-
-cat("  ✓ Reports specific β values for each genotype group\n")
-
-# ==============================================================================
-
-# ADNI Independent Cohort Validation Analysis - MAIN EXECUTION SCRIPT
-
-# ==============================================================================
-
-#
-
-# This is the main script that executes the complete ADNI validation analysis
-
-# 
-
-# ALL 5 CRITICAL ISSUES HAVE BEEN FIXED:
-
-#   ✓ Issue #1: Cox → Logistic regression (outputs OR not HR)
-
-#   ✓ Issue #2: APOE ε4 genotype stratification (ε4/ε4, ε4/ε3, non-carriers)
-
-#   ✓ Issue #3: <65 years sensitivity analysis added
-
-#   ✓ Issue #4: Pathway burden calculated as PERCENTAGE of total variance
-
-#   ✓ Issue #5: Complete 68-region brain volume analysis
-
-#
-
-# Usage:
-
-#   1. Set file paths in the "User Configuration" section below
-
-#   2. Source this script: source("ADNI_Independent_Cohort_Validation_GitHub_MAIN.R")
-
-#   3. Results will be saved to the specified output directory
-
-#
-
-# ==============================================================================
-
-
-
-# ==============================================================================
-
-# User Configuration
-
-# ==============================================================================
-
-
-
-# MODIFY THESE PATHS TO MATCH YOUR DATA LOCATION
-
-base_dir <- "path/to/your/data"  # CHANGE THIS
-
-output_dir <- file.path(base_dir, "ADNI_Validation_Results")
-
-
-
-# Input data files
-
-clinical_file <- file.path(base_dir, "Clinical/ADNIMERGE.csv")
-
-prs_file <- file.path(base_dir, "Genetics/ADNI_PRS_All_Pathways.csv")
-
-mri_file <- file.path(base_dir, "Imaging/FreeSurfer_Regional_Volumes.csv")
-
-
-
-# Create output directory
-
-dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("ADNI INDEPENDENT COHORT VALIDATION ANALYSIS\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("\nOutput directory:", output_dir, "\n")
-
-cat("\n")
-
-
-
-# ==============================================================================
-
-# Load All Analysis Functions
-
-# ==============================================================================
-
-
-
-cat("Loading analysis functions...\n")
-
-
-
-# Source all parts
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART1.R")
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART2.R")
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART3.R")
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART4.R")
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART5.R")
-
-source("ADNI_Independent_Cohort_Validation_GitHub_PART6.R")
-
-
-
-cat("All functions loaded successfully\n\n")
-
-
-
-# ==============================================================================
-
-# STEP 1: Load and Prepare Data
-
-# ==============================================================================
-
-
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 1: DATA LOADING AND PREPARATION\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# Load ADNI data
-
-adni_data <- load_adni_data(
-
-  clinical_file = clinical_file,
-
-  prs_file = prs_file,
-
-  mri_file = mri_file
-
-)
-
-
-
-# Create derived variables
-
-adni_data <- create_derived_variables(adni_data)
-
-
-
-cat("\nFinal dataset:\n")
-
-cat("  Total N:", nrow(adni_data), "\n")
-
-cat("  Age range:", min(adni_data$AGE, na.rm = TRUE), "-", 
-
-    max(adni_data$AGE, na.rm = TRUE), "years\n")
-
-cat("  Female:", sum(adni_data$PTGENDER == "Female", na.rm = TRUE), 
-
-    "(", round(mean(adni_data$PTGENDER == "Female", na.rm = TRUE) * 100, 1), "%)\n")
-
-cat("  APOE4 carriers:", sum(adni_data$APOE4 > 0, na.rm = TRUE), 
-
-    "(", round(mean(adni_data$APOE4 > 0, na.rm = TRUE) * 100, 1), "%)\n")
-
-
-
-# ==============================================================================
-
-# STEP 2: APOE-Stratified PRS-Biomarker Analysis
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 2: APOE-STRATIFIED PRS-BIOMARKER ANALYSIS\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# CRITICAL ISSUE #2: APOE ε4 genotype stratification
-
-apoe_biomarker_results <- analyze_apoe_genotype_stratified_biomarkers(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# ==============================================================================
-
-# STEP 3: Age-Stratified MCI Conversion Analysis
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 3: AGE-STRATIFIED MCI CONVERSION ANALYSIS\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# CRITICAL ISSUE #1: Logistic regression (OR not HR)
-
-# CRITICAL ISSUE #3: <65 years sensitivity analysis
-
-mci_conversion_results <- analyze_mci_conversion_logistic(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# Create visualization
-
-if (!is.null(mci_conversion_results)) {
-
-  plot_mci_conversion_by_age(
-
-    data = adni_data,
-
-    output_dir = output_dir
-
-  )
-
-}
-
-
-
-# ==============================================================================
-
-# STEP 4: PRS-Imaging Age Interaction Analysis
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 4: PRS-IMAGING AGE INTERACTION ANALYSIS\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# PRS × Age interactions for imaging measures
-
-prs_imaging_interaction <- analyze_prs_imaging_age_interaction(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# Age-stratified analysis
-
-prs_imaging_stratified <- analyze_prs_imaging_age_stratified(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# Create visualizations
-
-if (!is.null(prs_imaging_interaction)) {
-
-  plot_prs_imaging_by_age(
-
-    data = adni_data,
-
-    imaging_var = "Hippo_ICV_Ratio",
-
-    region_name = "Hippocampus",
-
-    output_dir = output_dir
-
-  )
-
-}
-
-
-
-# ==============================================================================
-
-# STEP 5: Unsupervised Genetic Subtyping
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 5: UNSUPERVISED GENETIC SUBTYPING\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# CRITICAL ISSUE #4: Pathway burden as PERCENTAGE
-
-clustering_results <- perform_kmeans_clustering(
-
-  data = adni_data,
-
-  output_dir = output_dir,
-
-  k = 3,
-
-  nstart = 50
-
-)
-
-
-
-if (!is.null(clustering_results)) {
-
-  
-
-  # Update data with cluster assignments
-
-  adni_data_clustered <- clustering_results$data
-
-  
-
-  # Validate with hierarchical clustering
-
-  hierarchical_validation <- validate_with_hierarchical_clustering(
-
-    data = adni_data_clustered,
-
-    prs_vars = grep("PRS_EOAD", colnames(adni_data_clustered), value = TRUE),
-
-    kmeans_labels = clustering_results$kmeans$cluster,
-
-    output_dir = output_dir
-
-  )
-
-  
-
-  # Characterize subtypes
-
-  subtype_characteristics <- characterize_subtypes(
-
-    data = adni_data_clustered,
-
-    output_dir = output_dir
-
-  )
-
-  
-
-  # Create visualization
-
-  plot_cluster_profiles(
-
-    kmeans_result = clustering_results$kmeans,
-
-    prs_vars = grep("PRS_EOAD", colnames(adni_data_clustered), value = TRUE),
-
-    cluster_labels = clustering_results$labels,
-
-    output_dir = output_dir
-
-  )
-
-  
-
-  # Use clustered data for subsequent analyses
-
-  adni_data <- adni_data_clustered
-
-}
-
-
-
-# ==============================================================================
-
-# STEP 6: Regional Brain Volume Analysis (68 Regions)
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 6: REGIONAL BRAIN VOLUME ANALYSIS (68 REGIONS)\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-# CRITICAL ISSUE #5: Complete 68-region analysis
-
-brain_region_results <- analyze_68_brain_regions(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# ==============================================================================
-
-# STEP 7: APOE Genotype-Stratified Imaging Analysis
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 7: APOE GENOTYPE-STRATIFIED IMAGING ANALYSIS\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-apoe_imaging_results <- analyze_apoe_genotype_stratified_imaging(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# ==============================================================================
-
-# STEP 8: APOE Genotype-Stratified MCI Conversion
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("STEP 8: APOE GENOTYPE-STRATIFIED MCI CONVERSION\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-apoe_conversion_results <- analyze_apoe_genotype_stratified_conversion(
-
-  data = adni_data,
-
-  output_dir = output_dir
-
-)
-
-
-
-# ==============================================================================
-
-# ANALYSIS COMPLETE
-
-# ==============================================================================
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("ANALYSIS COMPLETE!\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-cat("All results saved to:", output_dir, "\n\n")
-
-
-
-cat("Output files:\n")
-
-cat("  Tables/\n")
-
-cat("    - APOE_Genotype_Stratified_PRS_Biomarker.csv\n")
-
-cat("    - MCI_Conversion_Age_Stratified_70.csv\n")
-
-cat("    - MCI_Conversion_Sensitivity_65.csv\n")
-
-cat("    - PRS_Imaging_Age_Interaction.csv\n")
-
-cat("    - PRS_Imaging_Age_Stratified.csv\n")
-
-cat("    - Subtype_Assignment.csv\n")
-
-cat("    - Cluster_Centers.csv\n")
-
-cat("    - Pathway_Burden_by_Subtype.csv\n")
-
-cat("    - Hierarchical_Clustering_Concordance.csv\n")
-
-cat("    - Subtype_Characteristics.csv\n")
-
-cat("    - Subtype_Brain_Region_Effects.csv\n")
-
-cat("    - PRS_Brain_Region_Effects.csv\n")
-
-cat("    - ST_to_Brain_Region_Mapping.csv\n")
-
-cat("    - APOE_Genotype_Stratified_PRS_Imaging.csv\n")
-
-cat("    - APOE_Genotype_Stratified_MCI_Conversion.csv\n")
-
-cat("\n  Figures/\n")
-
-cat("    - MCI_Conversion_Age_Stratified.pdf\n")
-
-cat("    - PRS_Hippocampus_Age_Interaction.pdf\n")
-
-cat("    - Cluster_Profiles_Heatmap.pdf\n")
-
-cat("    - Hierarchical_Clustering_Dendrogram.pdf\n")
-
-
-
-cat("\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("ALL 5 CRITICAL ISSUES HAVE BEEN FIXED:\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n")
-
-cat("  ✓ Issue #1: Cox → Logistic regression (outputs OR not HR)\n")
-
-cat("  ✓ Issue #2: APOE ε4 genotype stratification (ε4/ε4, ε4/ε3, non-carriers)\n")
-
-cat("  ✓ Issue #3: <65 years sensitivity analysis added\n")
-
-cat("  ✓ Issue #4: Pathway burden calculated as PERCENTAGE of total variance\n")
-
-cat("  ✓ Issue #5: Complete 68-region brain volume analysis\n")
-
-cat(paste(rep("=", 80), collapse = ""), "\n\n")
-
-
-
-cat("Code is ready for GitHub upload!\n\n")
-
-
-
-# ==============================================================================
-
-# Session Information
-
-# ==============================================================================
-
-
-
-cat("Session Information:\n")
-
-print(sessionInfo())
-
-
-
-cat("\n")
-
-cat("Analysis completed:", Sys.time(), "\n")
-
-）
+# results <- run_adni_validation(
+#   clinical_file = "data/ADNIMERGE.csv",
+#   prs_file      = "data/ADNI_pathway_PRS.csv",
+#   mri_file      = "data/UCSFFSX51_ADNI1GO2.csv",
+#   csf_file      = "data/UPENNBIOMK_MASTER.csv",
+#   strem2_file   = "data/ADNI_CSF_sTREM2.csv",
+#   output_dir    = "results/adni_validation"
+# )
