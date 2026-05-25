@@ -79,6 +79,94 @@ Cross-cohort mechanistic validation spanning preclinical to clinical AD. Only AD
 - **Participant flow assessment**: quantification of potential selection bias for each cohort
 - **Cross-cohort forest plot visualization**: standardized effect sizes with 95% CI
 
+### 5. Robustness and Sensitivity Analyses (`05_Robustness_Sensitivity/`)
+
+**EOAD_Internal_Robustness.R**
+
+Internal robustness analyses addressing the limited EOAD GWAS discovery sample size and the absence of an independent downloadable EOAD GWAS replication resource:
+
+- **Power / minimum detectable effect analysis**: approximate single-variant odds ratios detectable at 80% and 90% power across allele-frequency and alpha-threshold scenarios using the EOAD effective sample size.
+- **Leave-one-gene TWAS robustness**: repeated oligodendrocyte-myelin S-PrediXcan enrichment tests after removing one pathway gene at a time across five GTEx v8 brain tissues.
+- **APOE/MHC locus-exclusion sensitivity**: refitting EOAD oligodendrocyte-myelin TWAS enrichment after excluding chr19:44-46 Mb, chr6:25-34 Mb and both regions.
+- **Matched random gene-set permutation**: 2,000 matched random gene sets per tissue, matched by TWAS model SNP count, predicted-expression variance and MAGMA gene-level SNP-count bins.
+
+Outputs correspond to Supplementary Tables 40-42:
+
+- `S40_EOAD_power_minimum_detectable_effect.csv`
+- `S41_leave_one_gene_summary.csv`
+- `S41_leave_one_gene_detail.csv`
+- `S41_locus_exclusion_sensitivity.csv`
+- `S42_matched_random_gene_set_permutation.csv`
+- `S42_permutation_diagnostics_first1000.csv`
+
+**ADNI_Scanner_Aware_Sensitivity.R**
+
+Scanner-aware MRI/WMH sensitivity analyses addressing residual acquisition heterogeneity in ADNI:
+
+- **FreeSurfer metadata exact matching**: analytic MRI rows are matched back to ADNI FreeSurfer metadata using RID, intracranial volume and WMH volume.
+- **UCD FLAIR WMH metadata exact matching**: analytic UCD WMH rows are matched back to UCD imaging metadata using RID and total WMH volume.
+- **Batch summaries**: ADNI phase, field strength, visit code, manufacturer and scanner-model distributions are tabulated.
+- **Field-strength sensitivity**: FreeSurfer MRI/WMH models are refitted with field-strength adjustment and 1.5T-only restriction.
+- **Manufacturer/model sensitivity**: UCD FLAIR WMH models are refitted with manufacturer adjustment, scanner-model adjustment, batch-effect residualization and manufacturer-specific restrictions.
+
+Outputs correspond to Supplementary Table 39:
+
+- `ADNI_FreeSurfer_batch_enriched.csv`
+- `ADNI_UCD_WMH_batch_enriched.csv`
+- `ADNI_scanner_batch_counts.csv`
+- `ADNI_scanner_aware_sensitivity_results.csv`
+- `ADNI_scanner_sensitivity_summary.txt`
+
+Example usage:
+
+```r
+source("05_Robustness_Sensitivity/EOAD_Internal_Robustness.R")
+
+twas_files <- c(
+  "Cortex" =
+    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Cortex.csv",
+  "Anterior cingulate cortex BA24" =
+    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Anterior_cingulate_cortex_BA24.csv",
+  "Putamen basal ganglia" =
+    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Putamen_basal_ganglia.csv",
+  "Frontal Cortex BA9" =
+    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Frontal_Cortex_BA9.csv",
+  "Hippocampus" =
+    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Hippocampus.csv"
+)
+
+robustness_results <- run_eoad_internal_robustness(
+  magma_gene_file = "data/MAGMA/Supplementary_Table_S1_EOAD_MAGMA_Complete.csv",
+  oligo_gene_file = "data/SPrediXcan/Supplementary_Table_2_Oligodendrocyte_Genes.csv",
+  twas_files = twas_files,
+  output_dir = "results/eoad_internal_robustness",
+  eoad_effective_n = 1573,
+  n_perm = 2000,
+  random_seed = 20260525
+)
+
+source("05_Robustness_Sensitivity/ADNI_Scanner_Aware_Sensitivity.R")
+
+scanner_results <- run_adni_scanner_aware_sensitivity(
+  final_analytic_file =
+    "data/ADNI_Age_Stratified_Results/ADNI_Age_Stratified_Final.csv",
+  stratified_analytic_file =
+    "data/ADNI_Validation_Results_Stratified/ADNI_Merged_Data_Stratified.csv",
+  freesurfer_metadata_file =
+    "data/ADNI/data/MRI/MRI_FreeSurfer.csv",
+  ucd_wmh_metadata_file =
+    "data/ADNI/data/MRI/UCD_WMH_03Jan2026.csv",
+  output_dir = "results/adni_scanner_sensitivity"
+)
+```
+
+Add the following package to the CRAN dependency list if it is not already installed:
+
+```r
+install.packages(c("broom"))
+```
+
+
 ## Requirements
 
 ### R Version
