@@ -186,6 +186,7 @@ Late-stage manuscript support framework that separates discovery, published EOAD
 - **Phenotype-level contextualization**: exports ADNI/HABS/A4/AIBL summary inputs as phenotype-level context, not clinical deployment or independent genetic replication, corresponding to Supplementary Table 50.
 
 The script uses CRAN/base R only (`data.table` and `stats`) and does not require proprietary or locally wrapped packages. Upstream colocalization results should be generated with the open-source `coloc` package when needed.
+When optional upstream inputs are unavailable, the runner writes explicit `NOT_RUN` status CSVs rather than silently omitting table numbers. It also writes `Supplementary_Table_44_50_presence_check.csv` to document whether Supplementary Tables 44-50 are present in the output directory.
 
 Example usage:
 
