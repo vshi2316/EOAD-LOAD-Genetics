@@ -1,6 +1,32 @@
 # ==============================================================================
 # EOAD vs LOAD: Concordance and Phenotype-Level Contextualization Framework
 # ==============================================================================
+#
+# Purpose: Reframe the late-stage EOAD/LOAD analyses for an Alzheimer's &
+#          Dementia-style manuscript by separating:
+#            1. unbiased pathway discovery in the current GWAS/MAGMA data,
+#            2. cross-method concordance with published EOAD genetic evidence,
+#            3. phenotype-level contextualization in ADNI/HABS/A4/AIBL, and
+#            4. targeted negative sensitivity analyses for the 44-gene
+#               oligodendrocyte/myelin candidate set.
+#
+# This script intentionally avoids proprietary or locally wrapped packages. It
+# uses CRAN/base R only (data.table + stats) and can summarize outputs generated
+# by open-source tools such as MAGMA, clusterProfiler, coloc and SMR/HEIDI.
+#
+# Terminology guardrails:
+#   - "Discovery" is reserved for analyses generated from the current EOAD/LOAD
+#     GWAS, MAGMA and GSEA data.
+#   - "Concordance" describes comparison with published EOAD evidence, including
+#     Bradley et al. 2025 gene sets, unless formal sample independence is proven.
+#   - "Phenotype-level contextualization" describes ADNI/HABS/A4/AIBL analyses.
+#   - The targeted 44-gene analyses are sensitivity tests, not proof of a
+#     concentrated oligodendrocyte/myelin causal chain.
+#
+# Dependencies: data.table
+# Optional upstream tools represented by input files: MAGMA, clusterProfiler,
+#   coloc, SMR/HEIDI.
+# ==============================================================================
 
 suppressPackageStartupMessages({
   library(data.table)
@@ -359,6 +385,7 @@ write_gsea_summary <- function(gsea_all, output_dir) {
     keyword_dt = keyword_groups
   ), fill = TRUE)
 
+  fwrite(overview, file.path(output_dir, "Supplementary_Table_45_unbiased_GSEA_summary.csv"))
   fwrite(overview, file.path(output_dir, "Supplementary_Table_45A_unbiased_GSEA_overview.csv"))
   fwrite(top30, file.path(output_dir, "Supplementary_Table_45B_unbiased_GSEA_top30.csv"))
   fwrite(keyword, file.path(output_dir, "Supplementary_Table_45C_GSEA_keyword_concordance.csv"))
@@ -575,6 +602,14 @@ write_concordance_outputs <- function(concordance, output_dir) {
       concordance,
       file.path(output_dir, "Supplementary_Table_46_Bradley_gene_set_concordance_NOT_RUN.csv")
     )
+    fwrite(
+      data.table(
+        status = "not_run",
+        reason = "Bradley concordance was not run, so APOE/chromosome 19 sensitivity could not be evaluated.",
+        terminology = "cross_method_concordance_sensitivity"
+      ),
+      file.path(output_dir, "Supplementary_Table_47_APOE_chr19_concordance_sensitivity_NOT_RUN.csv")
+    )
     return(invisible(NULL))
   }
 
@@ -589,6 +624,30 @@ write_concordance_outputs <- function(concordance, output_dir) {
     sensitivity,
     file.path(output_dir, "Supplementary_Table_47_APOE_chr19_concordance_sensitivity.csv")
   )
+}
+
+write_concordance_not_run_outputs <- function(output_dir, reason) {
+  not_run <- data.table(
+    status = "not_run",
+    reason = reason,
+    terminology = "cross_method_concordance"
+  )
+  fwrite(
+    not_run,
+    file.path(output_dir, "Supplementary_Table_46_Bradley_gene_set_concordance_NOT_RUN.csv")
+  )
+  fwrite(
+    data.table(
+      status = "not_run",
+      reason = paste(
+        reason,
+        "APOE/chromosome 19 sensitivity requires completed concordance results."
+      ),
+      terminology = "cross_method_concordance_sensitivity"
+    ),
+    file.path(output_dir, "Supplementary_Table_47_APOE_chr19_concordance_sensitivity_NOT_RUN.csv")
+  )
+  invisible(not_run)
 }
 
 
@@ -678,6 +737,12 @@ summarize_targeted_sensitivity <- function(config, output_dir) {
     fwrite(
       coloc_detail,
       file.path(output_dir, "Supplementary_Table_49_sc_eQTL_coloc_detail.csv")
+    )
+  } else {
+    write_status_table(
+      file.path(output_dir, "Supplementary_Table_49_sc_eQTL_coloc_detail_NOT_RUN.csv"),
+      "not_run",
+      "No single-cell eQTL colocalization detail file was detected."
     )
   }
 
@@ -786,6 +851,45 @@ write_language_notes <- function(output_dir) {
   )
 }
 
+write_supplementary_table_presence_check <- function(output_dir) {
+  expected <- data.table(
+    table_number = 44:50,
+    expected_layer = c(
+      "MAGMA gene-level overview",
+      "Unbiased GSEA discovery summary",
+      "Published EOAD gene-set concordance",
+      "APOE/chromosome 19 concordance sensitivity",
+      "Targeted 44-gene sensitivity summary",
+      "Single-cell eQTL colocalization detail",
+      "Phenotype-level contextualization"
+    ),
+    pattern = c(
+      "^Supplementary_Table_44.*\\.csv$",
+      "^Supplementary_Table_45.*\\.csv$",
+      "^Supplementary_Table_46.*\\.csv$",
+      "^Supplementary_Table_47.*\\.csv$",
+      "^Supplementary_Table_48.*\\.csv$",
+      "^Supplementary_Table_49.*\\.csv$",
+      "^Supplementary_Table_50.*\\.csv$"
+    )
+  )
+
+  files <- list.files(output_dir, pattern = "\\.csv$", full.names = FALSE)
+  expected[, matched_files := vapply(
+    pattern,
+    function(x) paste(files[grepl(x, files)], collapse = ";"),
+    character(1)
+  )]
+  expected[, present := nzchar(matched_files)]
+  expected[, status := ifelse(present, "present", "missing")]
+
+  fwrite(
+    expected,
+    file.path(output_dir, "Supplementary_Table_44_50_presence_check.csv")
+  )
+  expected[]
+}
+
 
 # ==============================================================================
 # 8. Master Runner
@@ -799,18 +903,41 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
   theme_message("Output directory: %s", config$output_dir)
   theme_message("Permutations per concordance test: %s", config$n_perm)
 
-  magma <- load_magma_pair(config)
-  magma_overview <- write_magma_overview(magma, config$output_dir)
+  magma <- tryCatch(
+    load_magma_pair(config),
+    error = function(e) {
+      warning(conditionMessage(e), call. = FALSE)
+      NULL
+    }
+  )
+
+  if (is.null(magma)) {
+    magma_overview <- write_status_table(
+      file.path(config$output_dir, "Supplementary_Table_44_MAGMA_gene_level_overview_NOT_RUN.csv"),
+      "not_run",
+      "EOAD and/or LOAD MAGMA input files were not available; MAGMA overview could not be generated."
+    )
+  } else {
+    magma_overview <- write_magma_overview(magma, config$output_dir)
+  }
 
   gsea_all <- load_gsea_results(config)
   gsea_summary <- write_gsea_summary(gsea_all, config$output_dir)
 
-  concordance <- run_published_gene_set_concordance(magma, config)
-  write_concordance_outputs(concordance, config$output_dir)
+  if (is.null(magma)) {
+    concordance <- write_concordance_not_run_outputs(
+      config$output_dir,
+      "EOAD/LOAD MAGMA inputs were unavailable; published gene-set concordance could not be evaluated."
+    )
+  } else {
+    concordance <- run_published_gene_set_concordance(magma, config)
+    write_concordance_outputs(concordance, config$output_dir)
+  }
 
   targeted <- summarize_targeted_sensitivity(config, config$output_dir)
   phenotype <- write_phenotype_context(config, config$output_dir)
   write_language_notes(config$output_dir)
+  table_presence <- write_supplementary_table_presence_check(config$output_dir)
 
   summary_file <- file.path(config$output_dir, "analysis_summary.txt")
   sink(summary_file)
@@ -841,6 +968,7 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
     concordance = concordance,
     targeted_sensitivity = targeted,
     phenotype_context = phenotype,
+    table_presence = table_presence,
     summary_file = summary_file
   )
 }
