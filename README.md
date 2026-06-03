@@ -11,21 +11,28 @@ The central finding is strong genome-wide overlap between EOAD and LOAD with pat
 ## Repository Structure
 
 ```
-EOAD-LOAD-Genetics/
-|-- 01_Pathway_Discovery/
-|   `-- EOAD_LOAD_Pathway_Discovery.R
-|-- 02_PRS_Construction/
-|   `-- PRS_LDpred2_Analysis.R
-|-- 03_ADNI_Contextualization/
-|   `-- ADNI_Validation.R
-|-- 04_External_Cohort_Contextualization/
-|   `-- A4_HABS_AIBL_Validation.R
-|-- 05_Robustness_Sensitivity/
-|   |-- EOAD_Internal_Robustness.R
-|   `-- ADNI_Scanner_Aware_Sensitivity.R
-|-- 06_Concordance_Contextualization/
-|   `-- Revised_AandD_Concordance_Contextualization.R
-|-- LICENSE
+01. EOAD_LOAD_Pathway_Discovery.R
+→ 01_Pathway_Discovery/EOAD_LOAD_Pathway_Discovery.R
+
+02. PRS_LDpred2_Analysis.R
+→ 02_PRS_Construction/PRS_LDpred2_Analysis.R
+
+03. ADNI_Validation.R
+→ 03_ADNI_Contextualization/ADNI_Validation.R
+
+04. A4_HABS_AIBL_Validation.R
+→ 04_External_Cohort_Contextualization/A4_HABS_AIBL_Validation.R
+
+EOAD Internal Robustness Analyses
+→ 05_Robustness_Sensitivity/EOAD_Internal_Robustness.R
+
+WMH Sensitivity Analyses
+→ 05_Robustness_Sensitivity/ADNI_Scanner_Aware_Sensitivity.R
+
+Concordance and Phenotype-Level Contextualization Framework
+→ 06_Concordance_Contextualization/Revised_AandD_Concordance_Contextualization.R
+
+-- LICENSE
 `-- README.md
 ```
 
