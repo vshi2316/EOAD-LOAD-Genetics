@@ -1,0 +1,704 @@
+# ==============================================================================
+# 07. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
+# ==============================================================================
+rm(list = ls())
+options(stringsAsFactors = FALSE)
+set.seed(20260612)
+
+# ------------------------------------------------------------------------------
+# 1. User configuration
+# ------------------------------------------------------------------------------
+
+DATA_DIR <- Sys.getenv("GSE272082_DATA_DIR", unset = file.path("data", "GSE272082"))
+H5_DIR <- Sys.getenv("GSE272082_H5_DIR", unset = DATA_DIR)
+INPUT_RDS <- Sys.getenv(
+  "GSE272082_SEURAT_RDS",
+  unset = file.path(DATA_DIR, "rds", "GSE272082_preprocessed_seurat.rds")
+)
+METADATA_FILE <- Sys.getenv(
+  "GSE272082_METADATA",
+  unset = file.path(DATA_DIR, "gse272082_sample_metadata_manual.csv")
+)
+OUT_DIR <- Sys.getenv(
+  "GSE272082_OUT_DIR",
+  unset = file.path("results", "07_GSE272082_orthogonal_validation")
+)
+
+FIG_DIR <- file.path(OUT_DIR, "figures")
+TAB_DIR <- file.path(OUT_DIR, "tables")
+RDS_DIR <- file.path(OUT_DIR, "rds")
+
+dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
+dir.create(TAB_DIR, showWarnings = FALSE, recursive = TRUE)
+dir.create(RDS_DIR, showWarnings = FALSE, recursive = TRUE)
+
+BEST_MARKER_SIGNAL_CUT <- 0.10
+MARKER_SIGNAL_GAP_CUT <- 0.05
+MIN_CELLS_PER_SAMPLE_CELLTYPE <- 20
+MIN_SAMPLES_PER_GROUP <- 2
+MIN_GENE_SET_OVERLAP <- 3
+FDR_CUT <- 0.05
+
+# ------------------------------------------------------------------------------
+# 2. Packages
+# ------------------------------------------------------------------------------
+
+cran_pkgs <- c(
+  "Seurat", "SeuratObject", "Matrix", "data.table", "dplyr", "tidyr",
+  "stringr", "readr", "tibble", "purrr", "ggplot2", "ggrepel",
+  "forcats", "scales", "RColorBrewer"
+)
+bioc_pkgs <- c("edgeR")
+
+install_if_missing <- function(pkg, bioc = FALSE) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    if (bioc) {
+      if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+      BiocManager::install(pkg, ask = FALSE, update = FALSE)
+    } else {
+      install.packages(pkg)
+    }
+  }
+}
+
+invisible(lapply(cran_pkgs, install_if_missing, bioc = FALSE))
+invisible(lapply(bioc_pkgs, install_if_missing, bioc = TRUE))
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(SeuratObject)
+  library(Matrix)
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(readr)
+  library(tibble)
+  library(purrr)
+  library(ggplot2)
+  library(ggrepel)
+  library(forcats)
+  library(scales)
+  library(RColorBrewer)
+  library(edgeR)
+})
+
+# ------------------------------------------------------------------------------
+# 3. Helper functions
+# ------------------------------------------------------------------------------
+
+message_step <- function(...) {
+  message("\n", paste0(...))
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
+get_assay_layer <- function(object, layer_name = "data") {
+  f <- get("GetAssayData")
+  if ("layer" %in% names(formals(f))) {
+    GetAssayData(object, assay = "RNA", layer = layer_name)
+  } else {
+    GetAssayData(object, assay = "RNA", slot = layer_name)
+  }
+}
+
+has_assay_layer <- function(object, layer_name = "data") {
+  out <- tryCatch({
+    mat <- get_assay_layer(object, layer_name)
+    nrow(mat) > 0 && ncol(mat) > 0
+  }, error = function(e) FALSE)
+  isTRUE(out)
+}
+
+read_h5_counts <- function(path) {
+  x <- Seurat::Read10X_h5(path, use.names = TRUE, unique.features = TRUE)
+  if (is.list(x)) {
+    if ("Gene Expression" %in% names(x)) return(x[["Gene Expression"]])
+    if ("RNA" %in% names(x)) return(x[["RNA"]])
+    return(x[[1]])
+  }
+  x
+}
+
+sample_metadata_default <- function() {
+  tibble::tribble(
+    ~sample_id, ~diagnosis, ~region, ~donor_id, ~sex, ~age_on_death, ~pmi_hours,
+    "NIH01", "control", "PFC", "CTRL_NIH01_03", "M", 61, 22.4,
+    "NIH02", "control", "EC",  "CTRL_NIH01_03", "M", 61, 22.4,
+    "NIH03", "control", "HIP", "CTRL_NIH01_03", "M", 61, 22.4,
+    "NIH04", "control", "PFC", "CTRL_NIH04_06", "M", 62, 12.5,
+    "NIH05", "control", "EC",  "CTRL_NIH04_06", "M", 62, 12.5,
+    "NIH06", "control", "HIP", "CTRL_NIH04_06", "M", 62, 12.5,
+    "NIH10", "sEOAD",   "PFC", "SEOAD_NIH10_12", "F", 61, 24.2,
+    "NIH11", "sEOAD",   "EC",  "SEOAD_NIH10_12", "F", 61, 24.2,
+    "NIH12", "sEOAD",   "HIP", "SEOAD_NIH10_12", "F", 61, 24.2,
+    "NIH13", "sEOAD",   "PFC", "SEOAD_NIH13_15", "F", 64, 24.3,
+    "NIH14", "sEOAD",   "EC",  "SEOAD_NIH13_15", "F", 64, 24.3,
+    "NIH15", "sEOAD",   "HIP", "SEOAD_NIH13_15", "F", 64, 24.3,
+    "NIH16", "sEOAD",   "PFC", "SEOAD_NIH16_18", "M", 62, 20.5,
+    "NIH17", "sEOAD",   "EC",  "SEOAD_NIH16_18", "M", 62, 20.5,
+    "NIH18", "sEOAD",   "HIP", "SEOAD_NIH16_18", "M", 62, 20.5,
+    "NIH28", "control", "PFC", "CTRL_NIH28_30", "F", 62, 18.9,
+    "NIH29", "control", "EC",  "CTRL_NIH28_30", "F", 62, 18.9,
+    "NIH30", "control", "HIP", "CTRL_NIH28_30", "F", 62, 18.9,
+    "UT04",  "control", "PFC", "CTRL_UT04", "M", 62, 48.0,
+    "UT09",  "control", "PFC", "CTRL_UT09", "M", 65, 24.0,
+    "UT2105","sEOAD",   "PFC", "SEOAD_UT2105", "M", 59, 68.0
+  )
+}
+
+make_file_metadata <- function(h5_files) {
+  file_meta <- tibble(
+    file_path = h5_files,
+    file_name = basename(h5_files),
+    gsm = stringr::str_extract(file_name, "^GSM[0-9]+"),
+    sample_id = stringr::str_match(
+      file_name,
+      "^GSM[0-9]+_([^_]+)_filtered_feature_bc_matrix\\.h5$"
+    )[, 2]
+  )
+  file_meta %>%
+    left_join(sample_metadata_default(), by = "sample_id") %>%
+    arrange(sample_id)
+}
+
+load_or_create_metadata <- function(h5_files, metadata_file) {
+  template <- make_file_metadata(h5_files)
+  if (!file.exists(metadata_file)) {
+    dir.create(dirname(metadata_file), showWarnings = FALSE, recursive = TRUE)
+    readr::write_csv(template, metadata_file)
+    missing_labels <- template %>% filter(is.na(diagnosis) | is.na(region))
+    if (nrow(missing_labels) > 0) {
+      stop(
+        "Metadata template was created but some samples need manual labels: ",
+        metadata_file
+      )
+    }
+    return(template)
+  }
+
+  user_meta <- readr::read_csv(metadata_file, show_col_types = FALSE)
+  required <- c("file_name", "sample_id", "diagnosis", "region", "donor_id")
+  missing <- setdiff(required, colnames(user_meta))
+  if (length(missing) > 0) {
+    user_meta <- template %>%
+      select(file_path, file_name, gsm, sample_id) %>%
+      left_join(user_meta, by = "sample_id")
+  }
+
+  out <- template %>%
+    select(file_path, file_name, gsm, sample_id) %>%
+    left_join(
+      user_meta %>%
+        select(any_of(c("sample_id", "diagnosis", "region", "donor_id", "sex", "age_on_death", "pmi_hours"))),
+      by = "sample_id",
+      suffix = c("", ".user")
+    )
+
+  required2 <- c("file_path", "file_name", "sample_id", "diagnosis", "region", "donor_id")
+  missing2 <- setdiff(required2, colnames(out))
+  if (length(missing2) > 0) stop("Metadata is missing columns: ", paste(missing2, collapse = ", "))
+
+  out %>%
+    mutate(
+      region = toupper(region),
+      diagnosis = factor(diagnosis, levels = c("control", "sEOAD")),
+      donor_id = ifelse(is.na(donor_id) | donor_id == "", sample_id, donor_id)
+    )
+}
+
+build_seurat_from_h5 <- function(h5_dir, metadata_file) {
+  h5_files <- list.files(
+    h5_dir,
+    pattern = "_filtered_feature_bc_matrix\\.h5$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  if (length(h5_files) == 0) {
+    stop("No filtered feature-barcode h5 files found in: ", h5_dir)
+  }
+
+  sample_meta <- load_or_create_metadata(h5_files, metadata_file)
+  readr::write_tsv(sample_meta, file.path(TAB_DIR, "gse272082_sample_metadata_used.tsv"))
+
+  obj_list <- vector("list", nrow(sample_meta))
+  for (i in seq_len(nrow(sample_meta))) {
+    row <- sample_meta[i, ]
+    message("Reading ", row$sample_id, ": ", row$file_name)
+    counts <- read_h5_counts(row$file_path)
+    obj <- CreateSeuratObject(counts = counts, project = row$sample_id, min.cells = 3, min.features = 200)
+    obj$sample_id <- row$sample_id
+    obj$diagnosis <- row$diagnosis
+    obj$region <- row$region
+    obj$donor_id <- row$donor_id
+    obj$sex <- row$sex %||% NA_character_
+    obj$age_on_death <- row$age_on_death %||% NA_real_
+    obj$pmi_hours <- row$pmi_hours %||% NA_real_
+    obj_list[[i]] <- obj
+  }
+
+  names(obj_list) <- sample_meta$sample_id
+  seu <- merge(obj_list[[1]], y = obj_list[-1], add.cell.ids = names(obj_list), project = "GSE272082_sEOAD")
+
+  seu[["percent.mt"]] <- PercentageFeatureSet(seu, pattern = "^MT-")
+  seu <- subset(seu, subset = nFeature_RNA >= 200 & nFeature_RNA <= 8000 & percent.mt <= 20)
+  seu <- NormalizeData(seu, normalization.method = "LogNormalize", scale.factor = 10000)
+  seu <- FindVariableFeatures(seu, selection.method = "vst", nfeatures = 3000)
+  seu <- ScaleData(seu, features = VariableFeatures(seu), verbose = FALSE)
+  seu <- RunPCA(seu, features = VariableFeatures(seu), npcs = 30, verbose = FALSE)
+  seu <- FindNeighbors(seu, dims = 1:30, verbose = FALSE)
+  seu <- FindClusters(seu, resolution = 0.5, verbose = FALSE)
+  seu <- RunUMAP(seu, dims = 1:30, verbose = FALSE)
+  seu
+}
+
+ensure_preprocessed <- function(seu) {
+  DefaultAssay(seu) <- "RNA"
+  if (!has_assay_layer(seu, "data")) {
+    seu <- NormalizeData(seu, normalization.method = "LogNormalize", scale.factor = 10000)
+  }
+  if (length(VariableFeatures(seu)) == 0) {
+    seu <- FindVariableFeatures(seu, selection.method = "vst", nfeatures = 3000)
+  }
+  if (!"pca" %in% names(seu@reductions)) {
+    seu <- ScaleData(seu, features = VariableFeatures(seu), verbose = FALSE)
+    seu <- RunPCA(seu, features = VariableFeatures(seu), npcs = 30, verbose = FALSE)
+  }
+  if (!"umap" %in% names(seu@reductions)) {
+    seu <- FindNeighbors(seu, dims = 1:30, verbose = FALSE)
+    seu <- FindClusters(seu, resolution = 0.5, verbose = FALSE)
+    seu <- RunUMAP(seu, dims = 1:30, verbose = FALSE)
+  }
+  seu
+}
+
+compute_marker_signals <- function(object, gene_sets, prefix) {
+  data_mat <- get_assay_layer(object, "data")
+  rn <- rownames(data_mat)
+  rn_upper <- toupper(rn)
+
+  signal_meta <- list()
+  overlap_meta <- list()
+
+  for (set_name in names(gene_sets)) {
+    genes <- unique(toupper(gene_sets[[set_name]]))
+    idx <- match(genes, rn_upper)
+    matched <- rn[idx[!is.na(idx)]]
+    out_col <- paste0(prefix, make.names(set_name))
+
+    if (length(matched) >= 2) {
+      signal_meta[[out_col]] <- Matrix::colMeans(data_mat[matched, , drop = FALSE])
+    } else {
+      signal_meta[[out_col]] <- rep(NA_real_, ncol(data_mat))
+    }
+
+    overlap_meta[[set_name]] <- tibble(
+      set_name = set_name,
+      n_input = length(unique(gene_sets[[set_name]])),
+      n_matched = length(matched),
+      matched_genes = paste(matched, collapse = ";")
+    )
+  }
+
+  signal_df <- as.data.frame(signal_meta)
+  rownames(signal_df) <- colnames(data_mat)
+  object <- AddMetaData(object, metadata = signal_df)
+  list(object = object, overlap = bind_rows(overlap_meta))
+}
+
+aggregate_pseudobulk <- function(seu, celltype_col) {
+  counts <- get_assay_layer(seu, "counts")
+  meta <- seu@meta.data %>%
+    rownames_to_column("cell") %>%
+    mutate(
+      cell_type = as.character(.data[[celltype_col]]),
+      diagnosis = as.character(diagnosis),
+      region = as.character(region),
+      sample_id = as.character(sample_id)
+    ) %>%
+    filter(!is.na(cell_type), cell_type != "Uncertain", diagnosis %in% c("control", "sEOAD"))
+
+  meta <- meta %>%
+    group_by(region, diagnosis, sample_id, donor_id, cell_type) %>%
+    mutate(n_cells_group = n()) %>%
+    ungroup() %>%
+    filter(n_cells_group >= MIN_CELLS_PER_SAMPLE_CELLTYPE)
+
+  if (nrow(meta) == 0) stop("No cells passed pseudobulk grouping filters.")
+
+  counts <- counts[, meta$cell, drop = FALSE]
+  meta$pb_id <- paste(meta$region, meta$cell_type, meta$sample_id, sep = "__")
+
+  design <- Matrix::sparse.model.matrix(~ 0 + pb_id, data = meta)
+  colnames(design) <- sub("^pb_id", "", colnames(design))
+  pb_counts <- counts %*% design
+
+  pb_meta <- meta %>%
+    distinct(pb_id, region, cell_type, sample_id, donor_id, diagnosis, sex, age_on_death, pmi_hours, n_cells_group) %>%
+    arrange(region, cell_type, sample_id)
+
+  pb_counts <- pb_counts[, pb_meta$pb_id, drop = FALSE]
+  list(counts = pb_counts, meta = pb_meta)
+}
+
+run_edgeR_for_group <- function(pb_counts, pb_meta, region_value, cell_type_value) {
+  idx <- which(pb_meta$region == region_value & pb_meta$cell_type == cell_type_value)
+  sub_meta <- pb_meta[idx, , drop = FALSE]
+  if (nrow(sub_meta) == 0) return(NULL)
+  if (length(unique(sub_meta$diagnosis)) < 2) return(NULL)
+
+  n_by_group <- table(sub_meta$diagnosis)
+  if (any(n_by_group[c("control", "sEOAD")] < MIN_SAMPLES_PER_GROUP)) return(NULL)
+
+  sub_counts <- pb_counts[, sub_meta$pb_id, drop = FALSE]
+  group <- factor(sub_meta$diagnosis, levels = c("control", "sEOAD"))
+
+  y <- edgeR::DGEList(counts = sub_counts, group = group)
+  keep <- edgeR::filterByExpr(y, group = group)
+  y <- y[keep, , keep.lib.sizes = FALSE]
+  if (nrow(y) < 100) return(NULL)
+
+  y <- edgeR::calcNormFactors(y)
+  design <- model.matrix(~ group)
+  fit <- edgeR::glmQLFit(y, design, robust = TRUE)
+  qlf <- edgeR::glmQLFTest(fit, coef = "groupsEOAD")
+  tt <- edgeR::topTags(qlf, n = Inf, sort.by = "none")$table
+
+  tt %>%
+    rownames_to_column("gene") %>%
+    transmute(
+      region = region_value,
+      marker_cell_type = cell_type_value,
+      gene = gene,
+      logFC = logFC,
+      logCPM = logCPM,
+      F = F,
+      p_value = PValue,
+      fdr_gene = FDR
+    )
+}
+
+test_candidate_gene_sets <- function(de_results, candidate_sets) {
+  if (is.null(de_results) || nrow(de_results) == 0) return(tibble())
+  all_tests <- list()
+  de_split <- split(de_results, paste(de_results$region, de_results$marker_cell_type, sep = "__"))
+
+  for (key in names(de_split)) {
+    de <- de_split[[key]]
+    region_value <- unique(de$region)
+    cell_type_value <- unique(de$marker_cell_type)
+
+    for (set_name in names(candidate_sets)) {
+      genes <- unique(toupper(candidate_sets[[set_name]]))
+      de$gene_upper <- toupper(de$gene)
+      sub <- de %>% filter(gene_upper %in% genes)
+      if (nrow(sub) < MIN_GENE_SET_OVERLAP) next
+
+      wt <- tryCatch(
+        stats::wilcox.test(sub$logFC, mu = 0, exact = FALSE),
+        error = function(e) NULL
+      )
+      if (is.null(wt)) next
+
+      all_tests[[length(all_tests) + 1]] <- tibble(
+        region = region_value,
+        marker_cell_type = cell_type_value,
+        set_name = set_name,
+        n_overlap = nrow(sub),
+        mean_logFC = mean(sub$logFC, na.rm = TRUE),
+        median_logFC = median(sub$logFC, na.rm = TRUE),
+        p_value = wt$p.value,
+        matched_genes = paste(sub$gene, collapse = ";")
+      )
+    }
+  }
+
+  bind_rows(all_tests) %>%
+    mutate(
+      fdr = p.adjust(p_value, method = "BH"),
+      direction = ifelse(mean_logFC > 0, "Higher in sEOAD", "Lower in sEOAD")
+    ) %>%
+    arrange(fdr, p_value)
+}
+
+plot_significant_gene_sets <- function(sig_tests, out_prefix) {
+  if (nrow(sig_tests) == 0) return(invisible(NULL))
+
+  plot_df <- sig_tests %>%
+    mutate(
+      comparison = paste(region, marker_cell_type, sep = " | "),
+      minus_log10_fdr = -log10(pmax(fdr, 1e-300)),
+      set_name = factor(set_name, levels = unique(set_name)),
+      comparison = forcats::fct_reorder(comparison, abs(mean_logFC), .fun = max)
+    )
+
+  p <- ggplot(plot_df, aes(x = set_name, y = comparison)) +
+    geom_point(
+      aes(size = minus_log10_fdr, colour = mean_logFC),
+      alpha = 0.90
+    ) +
+    scale_colour_gradient2(
+      low = "#2166AC", mid = "grey95", high = "#B2182B",
+      midpoint = 0, name = "Mean logFC\nsEOAD-control"
+    ) +
+    scale_size_continuous(name = "-log10(FDR)", range = c(2.2, 8.5)) +
+    labs(
+      title = "GSE272082 sEOAD pseudobulk candidate pathway signals",
+      subtitle = "Original-study marker framework; FDR-significant pathway-level tests only",
+      x = "Candidate pathway gene set",
+      y = "Brain region and reconstructed cell type"
+    ) +
+    theme_bw(base_size = 11) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(angle = 35, hjust = 1),
+      legend.position = "right",
+      plot.title = element_text(face = "bold")
+    )
+
+  ggsave(paste0(out_prefix, ".pdf"), p, width = 10.5, height = max(6, 0.32 * length(unique(plot_df$comparison)) + 2))
+  ggsave(paste0(out_prefix, ".png"), p, width = 10.5, height = max(6, 0.32 * length(unique(plot_df$comparison)) + 2), dpi = 300)
+}
+
+# ------------------------------------------------------------------------------
+# 4. Marker and pathway definitions
+# ------------------------------------------------------------------------------
+
+original_markers <- list(
+  Astrocyte = c("AQP4", "GFAP", "GJA1", "ALDH1L1", "SLC1A2", "SLC1A3"),
+  Endothelial = c("FLT1", "CLDN5", "ITM2A", "PECAM1", "VWF", "KDR"),
+  Excitatory = c("SLC17A7", "NRGN", "CAMK2A", "SATB2", "RBFOX3"),
+  Inhibitory = c("GAD2", "GAD1", "SLC6A1", "DLX1", "DLX2"),
+  Microglia = c("CSF1R", "CD74", "C3", "CX3CR1", "P2RY12", "TYROBP", "TREM2"),
+  Oligodendrocyte = c("MOBP", "MOG", "PLP1", "MAG", "MBP", "CNP", "CLDN11"),
+  OPC = c("PDGFRA", "VCAN", "OLIG2", "CSPG4", "SOX10", "GPR17"),
+  VLMC_Per = c("PDGFRB", "PDE5A", "RGS5", "TAGLN", "MYH11", "ACTA2")
+)
+
+candidate_sets <- list(
+  Core_Myelin7 = c("CNP", "MAG", "MBP", "MOBP", "MOG", "OLIG1", "OLIG2"),
+  Oligodendrocyte_OPC = c(
+    "PLP1", "MBP", "MOG", "MAG", "MOBP", "CNP", "CLDN11", "MAL",
+    "TF", "OPALIN", "ERMN", "ENPP2", "UGT8", "FA2H", "MYRF",
+    "SOX10", "OLIG1", "OLIG2", "BCAS1", "GPR17", "PDGFRA", "CSPG4", "VCAN"
+  ),
+  Lipid_Myelin = c(
+    "APOE", "CLU", "ABCA7", "ABCA1", "SORL1", "TREM2", "LPL", "LDLR",
+    "APOC1", "APOC2", "APOC4", "PLTP", "NPC1", "NPC2", "CYP46A1",
+    "SOAT1", "HMGCR", "MBP", "MOG", "MAG", "MOBP", "CNP"
+  ),
+  Amyloid_Clearance = c(
+    "APOE", "TREM2", "ABCA7", "CLU", "SORL1", "MS4A6A", "INPP5D",
+    "CD33", "CR1", "PICALM", "BIN1", "RIN3", "PLCG2", "C1QA", "C1QB", "C1QC"
+  ),
+  Immune_Microglia = c(
+    "TREM2", "TYROBP", "AIF1", "CX3CR1", "P2RY12", "P2RY13", "SPI1",
+    "CSF1R", "ITGAM", "CD68", "C1QA", "C1QB", "C1QC", "HLA-DRA",
+    "HLA-DRB1", "LST1", "FCER1G", "CTSS", "MS4A6A"
+  ),
+  Adhesion = c(
+    "BIN1", "CD46", "CD55", "CDH12", "CR1", "CR2", "CRLF1", "FOLH1",
+    "GP6", "NCAM2", "NLGN1", "SDK1", "ITGAM", "ITGB2", "ICAM1"
+  )
+)
+
+# ------------------------------------------------------------------------------
+# 5. Main analysis
+# ------------------------------------------------------------------------------
+
+message_step("Step 1: Load or build Seurat object")
+
+if (file.exists(INPUT_RDS)) {
+  message("Reading existing Seurat object: ", INPUT_RDS)
+  seu <- readRDS(INPUT_RDS)
+} else {
+  message("Existing Seurat object not found. Building from h5 files in: ", H5_DIR)
+  seu <- build_seurat_from_h5(H5_DIR, METADATA_FILE)
+}
+
+seu <- ensure_preprocessed(seu)
+DefaultAssay(seu) <- "RNA"
+seu$diagnosis <- factor(seu$diagnosis, levels = c("control", "sEOAD"))
+seu$region <- factor(toupper(as.character(seu$region)), levels = c("PFC", "EC", "HIP"))
+
+readr::write_tsv(
+  seu@meta.data %>%
+    as.data.frame() %>%
+    count(region, diagnosis, sample_id, name = "n_cells"),
+  file.path(TAB_DIR, "cells_per_sample_after_qc.tsv")
+)
+
+message_step("Step 2: Reconstruct original-study-framework cell labels")
+
+anno_signal <- compute_marker_signals(seu, original_markers, prefix = "ORIGCT__")
+seu <- anno_signal$object
+readr::write_tsv(anno_signal$overlap, file.path(TAB_DIR, "original_framework_marker_overlap.tsv"))
+
+orig_cols <- grep("^ORIGCT__", colnames(seu@meta.data), value = TRUE)
+orig_mat <- as.matrix(seu@meta.data[, orig_cols, drop = FALSE])
+orig_names <- sub("^ORIGCT__", "", orig_cols)
+
+best_idx <- max.col(orig_mat, ties.method = "first")
+seu$orig_framework_cell_type <- orig_names[best_idx]
+seu$orig_framework_best_signal <- apply(orig_mat, 1, max, na.rm = TRUE)
+seu$orig_framework_second_signal <- apply(orig_mat, 1, function(x) sort(x, decreasing = TRUE)[2])
+seu$orig_framework_signal_gap <- seu$orig_framework_best_signal - seu$orig_framework_second_signal
+seu$orig_framework_confident <- (
+  !is.na(seu$orig_framework_best_signal) &
+    seu$orig_framework_best_signal >= BEST_MARKER_SIGNAL_CUT &
+    seu$orig_framework_signal_gap >= MARKER_SIGNAL_GAP_CUT
+)
+
+seu$orig_framework_cell_type_conf <- ifelse(
+  seu$orig_framework_confident,
+  seu$orig_framework_cell_type,
+  "Uncertain"
+)
+
+seu$orig_framework_cell_type_conf <- factor(
+  seu$orig_framework_cell_type_conf,
+  levels = c(
+    "Astrocyte", "Excitatory", "Inhibitory", "Microglia",
+    "Oligodendrocyte", "OPC", "Endothelial", "VLMC_Per", "Uncertain"
+  )
+)
+
+readr::write_tsv(
+  seu@meta.data %>%
+    rownames_to_column("cell") %>%
+    select(
+      cell, sample_id, diagnosis, region, donor_id,
+      orig_framework_cell_type, orig_framework_best_signal,
+      orig_framework_second_signal, orig_framework_signal_gap,
+      orig_framework_confident, orig_framework_cell_type_conf
+    ),
+  file.path(TAB_DIR, "cell_annotation_original_framework.tsv")
+)
+
+readr::write_tsv(
+  seu@meta.data %>%
+    count(region, diagnosis, sample_id, orig_framework_cell_type_conf, name = "n_cells"),
+  file.path(TAB_DIR, "celltype_counts_original_framework.tsv")
+)
+
+if ("umap" %in% names(seu@reductions)) {
+  p_umap <- DimPlot(
+    seu,
+    group.by = "orig_framework_cell_type_conf",
+    reduction = "umap",
+    label = TRUE,
+    repel = TRUE,
+    raster = TRUE
+  ) +
+    ggtitle("GSE272082 original-study-framework cell labels")
+  ggsave(file.path(FIG_DIR, "Figure_GSE272082_original_framework_celltypes_umap.pdf"), p_umap, width = 10, height = 8)
+}
+
+message_step("Step 3: Aggregate pseudobulk counts")
+
+pb <- aggregate_pseudobulk(seu, "orig_framework_cell_type_conf")
+readr::write_tsv(pb$meta, file.path(TAB_DIR, "pseudobulk_sample_metadata.tsv"))
+
+message_step("Step 4: Run pseudobulk differential expression")
+
+regions <- sort(unique(pb$meta$region))
+cell_types <- sort(unique(pb$meta$cell_type))
+
+de_list <- list()
+for (region_value in regions) {
+  for (cell_type_value in cell_types) {
+    message("DE: ", region_value, " / ", cell_type_value)
+    res <- run_edgeR_for_group(pb$counts, pb$meta, region_value, cell_type_value)
+    if (!is.null(res) && nrow(res) > 0) {
+      de_list[[length(de_list) + 1]] <- res
+    }
+  }
+}
+
+de_results <- bind_rows(de_list)
+if (nrow(de_results) == 0) stop("No pseudobulk DE results were generated.")
+
+message_step("Step 5: Test candidate pathway gene sets")
+
+gene_set_overlap <- tibble(
+  set_name = names(candidate_sets),
+  n_input = purrr::map_int(candidate_sets, ~ length(unique(.x))),
+  n_matched = purrr::map_int(candidate_sets, function(x) {
+    sum(toupper(unique(x)) %in% toupper(rownames(get_assay_layer(seu, "data"))))
+  }),
+  matched_genes = purrr::map_chr(candidate_sets, function(x) {
+    genes <- rownames(get_assay_layer(seu, "data"))
+    paste(genes[toupper(genes) %in% toupper(unique(x))], collapse = ";")
+  })
+)
+readr::write_tsv(gene_set_overlap, file.path(TAB_DIR, "candidate_gene_set_overlap.tsv"))
+
+gene_set_tests_all <- test_candidate_gene_sets(de_results, candidate_sets)
+gene_set_tests_significant <- gene_set_tests_all %>%
+  filter(fdr < FDR_CUT) %>%
+  arrange(fdr, p_value)
+
+readr::write_tsv(
+  gene_set_tests_significant,
+  file.path(TAB_DIR, "candidate_gene_set_tests_significant.tsv")
+)
+
+readr::write_tsv(
+  gene_set_tests_significant %>%
+    select(
+      region, marker_cell_type, set_name, n_overlap,
+      mean_logFC, median_logFC, p_value, fdr, direction
+    ),
+  file.path(TAB_DIR, "candidate_gene_set_tests_manuscript_focus.tsv")
+)
+
+message_step("Step 6: Plot significant pathway-level signals")
+
+plot_significant_gene_sets(
+  gene_set_tests_significant,
+  file.path(FIG_DIR, "Figure_GSE272082_pseudobulk_gene_set_signals")
+)
+
+message_step("Step 7: Save processed object and analysis summary")
+
+saveRDS(seu, file.path(RDS_DIR, "GSE272082_original_framework_annotated_seurat.rds"))
+
+summary_lines <- c(
+  "GSE272082 orthogonal single-nucleus transcriptomic validation",
+  paste0("Generated: ", Sys.time()),
+  "",
+  "Interpretation:",
+  "This analysis provides orthogonal transcriptomic contextualization, not independent EOAD genetic replication.",
+  "",
+  "Inputs:",
+  paste0("- DATA_DIR: ", DATA_DIR),
+  paste0("- INPUT_RDS: ", INPUT_RDS),
+  paste0("- H5_DIR: ", H5_DIR),
+  paste0("- METADATA_FILE: ", METADATA_FILE),
+  "",
+  "Key parameters:",
+  paste0("- BEST_MARKER_SIGNAL_CUT: ", BEST_MARKER_SIGNAL_CUT),
+  paste0("- MARKER_SIGNAL_GAP_CUT: ", MARKER_SIGNAL_GAP_CUT),
+  paste0("- MIN_CELLS_PER_SAMPLE_CELLTYPE: ", MIN_CELLS_PER_SAMPLE_CELLTYPE),
+  paste0("- MIN_SAMPLES_PER_GROUP: ", MIN_SAMPLES_PER_GROUP),
+  paste0("- MIN_GENE_SET_OVERLAP: ", MIN_GENE_SET_OVERLAP),
+  paste0("- FDR_CUT: ", FDR_CUT),
+  "",
+  "Main outputs:",
+  "- tables/candidate_gene_set_tests_significant.tsv",
+  "- tables/candidate_gene_set_tests_manuscript_focus.tsv",
+  "- figures/Figure_GSE272082_pseudobulk_gene_set_signals.pdf",
+  "- figures/Figure_GSE272082_pseudobulk_gene_set_signals.png",
+  "",
+  paste0("Number of FDR-significant candidate pathway tests: ", nrow(gene_set_tests_significant))
+)
+
+writeLines(summary_lines, con = file.path(OUT_DIR, "analysis_summary.txt"))
+
+cat("\n==============================================================================\n")
+cat("GSE272082 orthogonal transcriptomic validation completed.\n")
+cat("Output directory:\n", OUT_DIR, "\n", sep = "")
+cat("FDR-significant candidate pathway tests: ", nrow(gene_set_tests_significant), "\n", sep = "")
+cat("==============================================================================\n")
