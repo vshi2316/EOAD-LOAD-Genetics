@@ -4,9 +4,9 @@
 
 ## Overview
 
-This repository contains analysis code for a comprehensive investigation of the genetic heterogeneity between early-onset Alzheimer's disease (EOAD, onset < 65 years) and late-onset Alzheimer's disease (LOAD). The study integrates genome-wide association study (GWAS) summary statistics, spatial transcriptomics, transcriptome-wide association studies, polygenic risk scores, published EOAD gene-set concordance, targeted sensitivity analyses, and phenotype-level contextualization across ADNI, A4, HABS, and AIBL.
+This repository contains analysis code for a comprehensive investigation of the genetic heterogeneity between early-onset Alzheimer's disease (EOAD, onset < 65 years) and late-onset Alzheimer's disease (LOAD). The study integrates genome-wide association study (GWAS) summary statistics, spatial transcriptomics, transcriptome-wide association studies, polygenic risk scores, published EOAD gene-set concordance, targeted sensitivity analyses, orthogonal single-nucleus transcriptomic contextualization, and phenotype-level contextualization across ADNI, A4, HABS, AIBL, and GSE272082.
 
-The central finding is strong genome-wide overlap between EOAD and LOAD with pathway-level heterogeneity. LOAD shows broader immune and microglial enrichment, whereas EOAD shows a narrower architecture involving adhesion, amyloid-clearance, selected immune, lipid, and white-matter-related signals. Published EOAD gene sets show cross-method concordance with the current MAGMA architecture, while targeted 44-gene oligodendrocyte/myelin sensitivity analyses do not support a concentrated single-gene or single-cell-type causal chain. ADNI, A4, HABS, and AIBL are used for phenotype-level contextualization and research stratification, not clinical deployment.
+The central finding is strong genome-wide overlap between EOAD and LOAD with pathway-level heterogeneity. LOAD shows broader immune and microglial enrichment, whereas EOAD shows a narrower architecture involving adhesion, amyloid-clearance, selected immune, lipid, and white-matter-related signals. Published EOAD gene sets show cross-method concordance with the current MAGMA architecture, while targeted 44-gene oligodendrocyte/myelin sensitivity analyses do not support a concentrated single-gene or single-cell-type causal chain. ADNI, A4, HABS, and AIBL are used for phenotype-level contextualization and research stratification, not clinical deployment. GSE272082 is used as orthogonal single-nucleus transcriptomic contextualization, not independent EOAD genetic replication.
 
 ## Repository Structure
 
@@ -208,6 +208,41 @@ results <- run_revised_aandd_concordance_contextualization(config)
 ```
 
 
+### 7. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation (`07_GSE272082_Orthogonal_Transcriptomic_Validation/`)
+
+**GSE272082_Orthogonal_Transcriptomic_Validation.R**
+
+Orthogonal transcriptomic contextualization using public GSE272082 single-nucleus gene-expression data from sporadic EOAD and control brain samples across prefrontal cortex (PFC), entorhinal cortex (EC), and hippocampus (HIP):
+
+- **Input data**: filtered 10x gene-expression h5 matrices from GSE272082. ATAC fragment files are not required for this RNA-focused module.
+- **Sample annotation**: control and sEOAD samples are mapped to PFC, EC, and HIP using sample-level metadata, including donor identifiers when available.
+- **Cell-type reconstruction**: major cell classes are reconstructed using marker genes aligned with the original study framework, followed by marker-signal confidence filtering.
+- **Pseudobulk differential expression**: counts are aggregated by brain region, reconstructed cell type, and sample; sEOAD versus control comparisons are performed within each region-cell-type stratum using edgeR.
+- **Candidate pathway testing**: pre-specified EOAD/LOAD candidate pathway gene sets are tested against pseudobulk log fold-changes.
+- **Manuscript-facing outputs**: only FDR-significant pseudobulk candidate pathway signals are exported for manuscript use.
+
+This module is designed to support biological triangulation of the pathway-level genetic findings. It should be described as orthogonal single-nucleus transcriptomic contextualization, not independent EOAD genetic replication, donor-level diagnostic validation, or single-cell causal proof.
+
+Outputs correspond to the GSE272082 supplementary figure and supplementary tables:
+
+- `candidate_gene_set_tests_significant.tsv`
+- `candidate_gene_set_tests_manuscript_focus.tsv`
+- `Figure_GSE272082_pseudobulk_gene_set_signals.pdf`
+- `Figure_GSE272082_pseudobulk_gene_set_signals.png`
+- `analysis_summary.txt`
+
+Example usage:
+
+```r
+Sys.setenv(
+  GSE272082_DATA_DIR = "data/GSE272082",
+  GSE272082_H5_DIR = "data/GSE272082",
+  GSE272082_OUT_DIR = "results/07_GSE272082_orthogonal_validation"
+)
+
+source("07. GSE272082_Orthogonal_Transcriptomic_Validation.R")
+```
+
 ## Requirements
 
 ### R Version
@@ -223,7 +258,9 @@ install.packages(c(
   "pROC", "lavaan", "logistf", "PRROC",
   "sandwich", "lmtest", "mediation", "meta",
   "ggseg", "flexsurv", "dcurves", "patchwork",
-  "viridis", "RColorBrewer"
+  "viridis", "RColorBrewer", "Seurat", "SeuratObject",
+  "Matrix", "readr", "tibble", "purrr", "stringr",
+  "ggrepel", "forcats", "scales"
 ))
 
 # Bioconductor packages
@@ -233,7 +270,7 @@ BiocManager::install(c(
   "bigsnpr", "clusterProfiler", "org.Hs.eg.db",
   "org.Mm.eg.db", "biomaRt",
   "TxDb.Hsapiens.UCSC.hg19.knownGene",
-  "GenomicRanges"
+  "GenomicRanges", "edgeR"
 ))
 ```
 
@@ -291,6 +328,13 @@ BiocManager::install(c(
 | **MOSTA Adult Mouse Brain** | Hippocampal subfields, cortical layers, white matter tracts | [MOSTA](https://db.cngb.org/stomics/mosta/) |
 | **MOSTA Embryonic Mouse Brain (E16.5)** | Developmental control | [MOSTA](https://db.cngb.org/stomics/mosta/) |
 
+### GSE272082 Single-Nucleus Transcriptomic Data
+| Dataset | Region(s) | Modality Used Here | Description | Access |
+|---------|-----------|--------------------|-------------|--------|
+| **GSE272082** | PFC, EC, HIP | Single-nucleus RNA-seq filtered 10x h5 matrices | Sporadic EOAD and control brain samples used for orthogonal pseudobulk pathway-level transcriptomic contextualization | [GEO GSE272082](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE272082) |
+
+Only filtered gene-expression h5 matrices are required for the RNA-focused orthogonal validation module. ATAC fragment files are not required by `07. GSE272082_Orthogonal_Transcriptomic_Validation.R`.
+
 ### Validation Cohorts
 | Cohort | N | Description | Access |
 |--------|---|-------------|--------|
@@ -330,6 +374,8 @@ Computational workflows employed publicly available implementations:
 5. MAGMA gene-based analysis requires pre-computed annotation files (`.genes.annot`) generated from the 1000 Genomes Phase 3 EUR reference panel.
 6. S-PrediXcan requires GTEx v8 prediction model databases (`.db` files) and covariance files for each brain tissue.
 7. gsMap requires spatial transcriptomic data in standard 10X Visium format; human gene symbols are converted to mouse orthologs via Ensembl BioMart for cross-species analyses.
+
+8. The GSE272082 module is an orthogonal transcriptomic contextualization analysis. It exports FDR-significant pseudobulk candidate pathway results and does not perform donor-level module-score validation or independent EOAD genetic replication.
 
 ## License
 
