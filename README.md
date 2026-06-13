@@ -1,392 +1,566 @@
-# Genetic Heterogeneity of Early-Onset versus Late-Onset Alzheimer's Disease: From Polygenic Architecture to Pathway-Level Contextualization
+# Genetic Heterogeneity of Early-Onset versus Late-Onset Alzheimer's Disease
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
-This repository contains analysis code for a comprehensive investigation of the genetic heterogeneity between early-onset Alzheimer's disease (EOAD, onset < 65 years) and late-onset Alzheimer's disease (LOAD). The study integrates genome-wide association study (GWAS) summary statistics, spatial transcriptomics, transcriptome-wide association studies, polygenic risk scores, published EOAD gene-set concordance, targeted sensitivity analyses, orthogonal single-nucleus transcriptomic contextualization, and phenotype-level contextualization across ADNI, A4, HABS, AIBL, and GSE272082.
+This repository contains the analysis code for a multi-layer investigation of genetic heterogeneity between early-onset Alzheimer's disease (EOAD) and late-onset Alzheimer's disease (LOAD). The study integrates GWAS summary statistics, MAGMA gene and pathway analyses, spatial transcriptomic annotation, TWAS, pathway-specific polygenic risk scores, ADNI/A4/HABS/AIBL phenotype-level contextualization, independent EOAD GWAS replication using Bradley/Pottier 2025 summary statistics, meta-enhanced EOAD genetic analysis, and orthogonal single-nucleus transcriptomic contextualization using GSE272082.
 
-The central finding is strong genome-wide overlap between EOAD and LOAD with pathway-level heterogeneity. LOAD shows broader immune and microglial enrichment, whereas EOAD shows a narrower architecture involving adhesion, amyloid-clearance, selected immune, lipid, and white-matter-related signals. Published EOAD gene sets show cross-method concordance with the current MAGMA architecture, while targeted 44-gene oligodendrocyte/myelin sensitivity analyses do not support a concentrated single-gene or single-cell-type causal chain. ADNI, A4, HABS, and AIBL are used for phenotype-level contextualization and research stratification, not clinical deployment. GSE272082 is used as orthogonal single-nucleus transcriptomic contextualization, not independent EOAD genetic replication.
+The central model is that EOAD and LOAD can show substantial genome-wide overlap while still differing at the pathway and cellular-context levels. FinnGen EOAD and EADB LOAD are used as the primary discovery framework because they allow a parallel EOAD-versus-LOAD comparison. Bradley/Pottier 2025 EOAD GWAS summary statistics are used as independent external EOAD genetic replication, with Age65 as the primary replication definition and Age70 as sensitivity analysis. FinnGen plus Bradley Age65 inverse-variance meta-analysis is used only as a meta-enhanced power analysis after external replication. ADNI, A4, HABS, and AIBL are used for clinical and phenotype-level contextualization. GSE272082 is used for orthogonal single-nucleus transcriptomic contextualization and is not presented as an independent genetic replication dataset.
 
 ## Repository Structure
 
-```
+```text
 01. EOAD_LOAD_Pathway_Discovery.R
-→ 01_Pathway_Discovery/EOAD_LOAD_Pathway_Discovery.R
-
 02. PRS_LDpred2_Analysis.R
-→ 02_PRS_Construction/PRS_LDpred2_Analysis.R
-
 03. ADNI_Validation.R
-→ 03_ADNI_Contextualization/ADNI_Validation.R
-
 04. A4_HABS_AIBL_Validation.R
-→ 04_External_Cohort_Contextualization/A4_HABS_AIBL_Validation.R
-
-EOAD Internal Robustness Analyses
-→ 05_Robustness_Sensitivity/EOAD_Internal_Robustness.R
-
-WMH Sensitivity Analyses
-→ 05_Robustness_Sensitivity/ADNI_Scanner_Aware_Sensitivity.R
-
-Concordance and Phenotype-Level Contextualization Framework
-→ 06_Concordance_Contextualization/Revised_AandD_Concordance_Contextualization.R
-
--- LICENSE
-`-- README.md
+05_1. EOAD Internal Robustness Analyses
+05_2. WMH Sensitivity Analyses
+06. Concordance and Phenotype-Level Contextualization
+07. Bradley_Pottier_2025_EOAD_GWAS_Replication.R
+08. Bradley_Pottier_2025_SNP_Locus_Replication.R
+09. FinnGen_Bradley_Age65_IVW_Meta_MAGMA.R
+10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
+LICENSE
+README.md
 ```
 
-## Analysis Modules
+## Evidence Framework
 
-### 1. Data-Driven Pathway Discovery (`01_Pathway_Discovery/`)
+The current manuscript uses a three-layer evidence chain:
 
-**EOAD_LOAD_Pathway_Discovery.R**
+1. Discovery: FinnGen EOAD and EADB LOAD define the primary EOAD-versus-LOAD genetic heterogeneity framework.
+2. Independent EOAD genetic replication: Bradley/Pottier 2025 EOAD GWAS summary statistics test whether the main EOAD pathway architecture is externally supported.
+3. Biological and clinical contextualization: meta-enhanced MAGMA, spatial transcriptomics, TWAS, ADNI/A4/HABS/AIBL, and GSE272082 place the replicated genetic signals into brain, cell-type, and phenotype contexts.
 
-Gene-based and pathway-level dissection of EOAD versus LOAD genetic architecture:
+The repository deliberately separates independent genetic replication from contextualization. This distinction is important for interpretation:
 
-- **MAGMA gene-based association** (v1.10): gene boundaries extended 35 kb upstream / 10 kb downstream, 1000 Genomes Phase 3 EUR LD reference, Bonferroni threshold P < 0.05/19,000 protein-coding genes
-- **Graham et al. glial module enrichment**: one-sided Fisher's exact tests mapping GWAS-significant genes onto five curated microglial and oligodendrocyte transcriptional programs (Human Microglial AD-Significant, Human Oligodendrocyte AD-Significant, Mouse ARM, Mouse Phagolysosomal, Mouse Longevity)
-- **GSEA** via clusterProfiler: genes ranked by MAGMA Z-statistics, GO-BP pathways, FDR < 0.05
-- **MAGMA gene-property analysis**: nine curated cell-type marker gene sets (T-cell, microglia, oligodendrocyte, Aβ clearance, APP metabolism, myelination, astrocyte, neuron, endothelial)
-- **Conditional regression**: testing T-cell signal independence after controlling for microglial gene expression
-- **LOAD downsampling validation**: 50 independent iterations matching LOAD effective sample size to EOAD (N ≈ 1,573), re-executing MAGMA gene-based and gene-set analyses to distinguish power-dependent from architecture-dependent pathway enrichment
+- Bradley Age65 and Age70 are independent EOAD genetic replication resources.
+- FinnGen plus Bradley Age65 meta-analysis is a power-enhancement analysis, not a new independent validation cohort.
+- ADNI is a genotype-enabled clinical and neuroimaging contextualization cohort, not an independent EOAD GWAS replication cohort.
+- A4, HABS, and AIBL provide phenotype-level context and sensitivity analyses, not GWAS replication.
+- GSE272082 provides orthogonal single-nucleus transcriptomic support, not donor-level genetic replication.
 
-### 2. Polygenic Risk Score Construction and Transcriptome-Wide Association (`02_PRS_Construction/`)
+## Data Inputs
 
-**PRS_LDpred2_Analysis.R**
+The scripts expect local access to public or controlled-access data files. Large GWAS, genotype, and imaging data are not redistributed in this repository.
 
-Bayesian PRS construction, pathway-specific partitioning, and S-PrediXcan TWAS:
+### GWAS Summary Statistics
 
-- **S-PrediXcan TWAS**: GTEx v8 prediction models across five brain regions (Cortex, Anterior Cingulate Cortex BA24, Frontal Cortex BA9, Hippocampus, Putamen basal ganglia); genetically predicted expression of 49 MAGMA-identified oligodendrocyte-myelin pathway genes; two-sided Wilcoxon rank-sum tests comparing median predicted Z-scores between oligodendrocyte and background genes, one-sided tests confirming directional effects, Levene's test assessing expression variability; LOAD and multivariate aging GWAS as controls to verify EOAD specificity
-- **LDpred2-auto**: 30 MCMC chains, jointly estimating SNP heritability (h²) and polygenicity (p); chain bagging aggregating posterior effect estimates across converged chains; EOAD, LOAD, and multivariate aging summary statistics harmonised to GRCh37 coordinates and matched to HapMap3+ European LD reference panel
-- **Pathway-specific PRS**: six gene sets (T-cell activation, activated microglia, Aβ clearance, APP metabolism, oligodendrocyte, myelination); SNPs within 100 kb of pathway gene boundaries retained with LDpred2 weights, all remaining SNPs masked to zero
-- **Cellular origin burden**: percentage of total genetic risk attributable to each pathway
-- **APOE sensitivity**: APOE-excluded PRS generated by masking variants within Chr19:44,000,000–46,000,000 bp (GRCh37); APOE contribution calculated as percentage reduction in pathway burden after masking
+Required or optional GWAS inputs include:
 
-### 3. ADNI Contextualization (`03_ADNI_Contextualization/`)
+- FinnGen Release 11 EOAD summary statistics for the `AD_EO_EXMORE` endpoint.
+- EADB LOAD summary statistics.
+- Bradley/Pottier 2025 EOAD GWAS summary statistics:
+  - `NHW_Age65_sumstats_base_model_SNP-SEX-10PCs-Array.txt`
+  - `NHW_Age70_sumstats_base_model_SNP-SEX-10PCs-Array.txt`
+- Multivariate healthspan/lifespan/longevity GWAS summary statistics.
+- UK Biobank/Oxford BIG40 imaging genetics summary statistics for white-matter microstructure phenotypes.
 
-**ADNI_Validation.R**
+### Reference Resources
 
-Primary genotype-enabled ADNI contextual analysis (N = 812):
+MAGMA analyses require:
 
-- **Pathway-specific PRS**: six PRS computed by applying LDpred2 posterior weights to imputed genotypes, standardized to z-scores
-- **Neuroimaging phenotypes**: FreeSurfer pipeline — total WMH volume, bilateral hippocampal volume, bilateral entorhinal cortical volume, all normalized to intracranial volume; 68 cortical and subcortical regions (Desikan–Killiany atlas)
-- **CSF biomarkers**: AlzBio3 immunoassay platform (Aβ42, total tau, phosphorylated tau); sTREM2 for microglial activation assessment
-- **Linear regression**: PRS associations with neuroimaging and CSF biomarkers, adjusting for age, sex, APOE ε4 allele count, and education
-- **Age stratification**: younger (<70 years) versus older (≥70 years) subgroups; age × PRS interaction terms to evaluate age-dependent effects
-- **MCI-to-dementia conversion**: logistic regression (N = 482 MCI, 190 conversions, median follow-up 4.0 years); age-dependent reversal of oligodendrocyte pathway genetic risk (age × PRS interaction OR = 0.54, P = 0.005)
-- **Sliding-window analysis**: overlapping 10-year windows with 2-year increments across ages 55–85; Benjamini–Hochberg FDR correction across windows
-- **Unsupervised k-means clustering**: three genetic subtypes (Background_Risk, Oligo_Driven, High_Aβ) from six pathway-specific PRS; hierarchical clustering achieving 78% concordance
-- **Regional brain atrophy**: subtype-specific patterns across 68 cortical and subcortical regions, ggseg visualization
+- MAGMA executable.
+- 1000 Genomes Phase 3 EUR MAGMA binary reference.
+- MAGMA gene-location file matching the coordinate build used for SNP annotation.
+- Optional MSigDB MAGMA gene-set annotation file.
 
-### 4. External Cohort Contextualization (`04_External_Cohort_Contextualization/`)
+Bradley/Pottier coordinate processing may require:
 
-**A4_HABS_AIBL_Validation.R**
+- `hg38ToHg19.over.chain.gz` if the raw Bradley file is in GRCh38 and the MAGMA reference is GRCh37/hg19.
+- Bioconductor `SNPlocs.Hsapiens.dbSNP155.GRCh37` for chr:pos-to-rsID mapping.
 
-Cross-cohort phenotype-level contextualization spanning preclinical to clinical AD. Only ADNI provided genome-wide genotyping for PRS computation; A4, HABS, and AIBL lacked genotyping data and therefore employed WMH as a non-specific phenotype-level marker of white matter injury.
+### Clinical and Transcriptomic Data
 
-- **HABS** (N = 1,490): phenotype-driven mediation analysis testing whether WMH exerts an indirect effect on cognition through p-tau217 (average causal mediation effect estimated via 5,000 bootstrap iterations, confirmed by structural equation modelling); age-stratified SEM (<75 versus ≥75 years); formal Age × p-tau217 interaction term on cognition
-- **A4 Study** (N = 1,260): linear regression with heteroscedasticity-consistent standard errors (HC3) assessing WMH–cognition association (Preclinical Alzheimer Cognitive Composite), adjusting for age, sex, APOE ε4, education, and Centiloid amyloid burden
-- **AIBL** (N = 408): Cox proportional hazards regression for conversion to dementia with APOE ε4 as primary predictor; clinical utility of WMH for predicting cognitive impairment evaluated using Firth-corrected logistic regression, AUC, net reclassification improvement, and decision curve analysis
-- **Participant flow assessment**: quantification of potential selection bias for each cohort
-- **Cross-cohort forest plot visualization**: standardized effect sizes with 95% CI
+Clinical and transcriptomic contextualization modules use:
 
-### 5. Robustness and Sensitivity Analyses (`05_Robustness_Sensitivity/`)
+- ADNI genotype, MRI, CSF, APOE, diagnosis, and longitudinal clinical data.
+- A4, HABS, and AIBL phenotype-level datasets where available.
+- GTEx v8 S-PrediXcan brain tissue prediction outputs.
+- LIBD hippocampus spatial transcriptomic data.
+- Maynard et al. DLPFC spatial transcriptomic data.
+- GSE272082 filtered single-nucleus gene-expression h5 matrices and sample metadata.
 
-**EOAD_Internal_Robustness.R**
+## Recommended Local Configuration
 
-Internal robustness analyses addressing the limited EOAD GWAS discovery sample size and the absence of an independent downloadable EOAD GWAS replication resource:
-
-- **Power / minimum detectable effect analysis**: approximate single-variant odds ratios detectable at 80% and 90% power across allele-frequency and alpha-threshold scenarios using the EOAD effective sample size.
-- **Leave-one-gene TWAS robustness**: repeated oligodendrocyte-myelin S-PrediXcan enrichment tests after removing one pathway gene at a time across five GTEx v8 brain tissues.
-- **APOE/MHC locus-exclusion sensitivity**: refitting EOAD oligodendrocyte-myelin TWAS enrichment after excluding chr19:44-46 Mb, chr6:25-34 Mb and both regions.
-- **Matched random gene-set permutation**: 2,000 matched random gene sets per tissue, matched by TWAS model SNP count, predicted-expression variance and MAGMA gene-level SNP-count bins.
-
-Outputs correspond to Supplementary Tables 40-42:
-
-- `S40_EOAD_power_minimum_detectable_effect.csv`
-- `S41_leave_one_gene_summary.csv`
-- `S41_leave_one_gene_detail.csv`
-- `S41_locus_exclusion_sensitivity.csv`
-- `S42_matched_random_gene_set_permutation.csv`
-- `S42_permutation_diagnostics_first1000.csv`
-
-**ADNI_Scanner_Aware_Sensitivity.R**
-
-Scanner-aware MRI/WMH sensitivity analyses addressing residual acquisition heterogeneity in ADNI:
-
-- **FreeSurfer metadata exact matching**: analytic MRI rows are matched back to ADNI FreeSurfer metadata using RID, intracranial volume and WMH volume.
-- **UCD FLAIR WMH metadata exact matching**: analytic UCD WMH rows are matched back to UCD imaging metadata using RID and total WMH volume.
-- **Batch summaries**: ADNI phase, field strength, visit code, manufacturer and scanner-model distributions are tabulated.
-- **Field-strength sensitivity**: FreeSurfer MRI/WMH models are refitted with field-strength adjustment and 1.5T-only restriction.
-- **Manufacturer/model sensitivity**: UCD FLAIR WMH models are refitted with manufacturer adjustment, scanner-model adjustment, batch-effect residualization and manufacturer-specific restrictions.
-
-Outputs correspond to Supplementary Table 39:
-
-- `ADNI_FreeSurfer_batch_enriched.csv`
-- `ADNI_UCD_WMH_batch_enriched.csv`
-- `ADNI_scanner_batch_counts.csv`
-- `ADNI_scanner_aware_sensitivity_results.csv`
-- `ADNI_scanner_sensitivity_summary.txt`
-
-Example usage:
-
-```r
-source("05_Robustness_Sensitivity/EOAD_Internal_Robustness.R")
-
-twas_files <- c(
-  "Cortex" =
-    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Cortex.csv",
-  "Anterior cingulate cortex BA24" =
-    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Anterior_cingulate_cortex_BA24.csv",
-  "Putamen basal ganglia" =
-    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Putamen_basal_ganglia.csv",
-  "Frontal Cortex BA9" =
-    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Frontal_Cortex_BA9.csv",
-  "Hippocampus" =
-    "data/SPrediXcan/EOAD_hg19__PM__mashr_Brain_Hippocampus.csv"
-)
-
-robustness_results <- run_eoad_internal_robustness(
-  magma_gene_file = "data/MAGMA/Supplementary_Table_S1_EOAD_MAGMA_Complete.csv",
-  oligo_gene_file = "data/SPrediXcan/Supplementary_Table_2_Oligodendrocyte_Genes.csv",
-  twas_files = twas_files,
-  output_dir = "results/eoad_internal_robustness",
-  eoad_effective_n = 1573,
-  n_perm = 2000,
-  random_seed = 20260525
-)
-
-source("05_Robustness_Sensitivity/ADNI_Scanner_Aware_Sensitivity.R")
-
-scanner_results <- run_adni_scanner_aware_sensitivity(
-  final_analytic_file =
-    "data/ADNI_Age_Stratified_Results/ADNI_Age_Stratified_Final.csv",
-  stratified_analytic_file =
-    "data/ADNI_Validation_Results_Stratified/ADNI_Merged_Data_Stratified.csv",
-  freesurfer_metadata_file =
-    "data/ADNI/data/MRI/MRI_FreeSurfer.csv",
-  ucd_wmh_metadata_file =
-    "data/ADNI/data/MRI/UCD_WMH_03Jan2026.csv",
-  output_dir = "results/adni_scanner_sensitivity"
-)
-```
-
-Add the following package to the CRAN dependency list if it is not already installed:
-
-```r
-install.packages(c("broom"))
-```
-
-
-### 6. Concordance and Phenotype-Level Contextualization (`06_Concordance_Contextualization/`)
-
-**Revised_AandD_Concordance_Contextualization.R**
-
-Late-stage manuscript support framework that separates discovery, published EOAD gene-set concordance, phenotype-level contextualization, and targeted 44-gene sensitivity analyses:
-
-- **MAGMA gene-level overview**: summarizes EOAD and LOAD MAGMA inputs and exports the table corresponding to Supplementary Table 44.
-- **Unbiased GSEA summary**: collects GO-BP, GO-MF and KEGG pathway results and exports overview, top-ranked pathways and keyword-level summaries corresponding to Supplementary Table 45.
-- **Bradley 2025 concordance**: tests published EOAD gene sets against the current MAGMA architecture using matched random gene-set sampling, empirical P values, Wilcoxon statistics and FDR correction, corresponding to Supplementary Table 46.
-- **APOE/chromosome 19 sensitivity**: repeats Bradley concordance after excluding the APOE/TOMM40/APOC LD region and after excluding all chromosome 19 genes, corresponding to Supplementary Table 47.
-- **Targeted 44-gene sensitivity**: summarizes MAGMA permutation, open-source `coloc.abf` single-cell eQTL colocalization and SMR/HEIDI outputs for the oligodendrocyte/myelin candidate gene set, corresponding to Supplementary Tables 48-49.
-- **Phenotype-level contextualization**: exports ADNI/HABS/A4/AIBL summary inputs as phenotype-level context, not clinical deployment or independent genetic replication, corresponding to Supplementary Table 50.
-
-The script uses CRAN/base R only (`data.table` and `stats`) and does not require proprietary or locally wrapped packages. Upstream colocalization results should be generated with the open-source `coloc` package when needed.
-When optional upstream inputs are unavailable, the runner writes explicit `NOT_RUN` status CSVs rather than silently omitting table numbers. It also writes `Supplementary_Table_44_50_presence_check.csv` to document whether Supplementary Tables 44-50 are present in the output directory.
-
-Example usage:
-
-```r
-source("06_Concordance_Contextualization/Revised_AandD_Concordance_Contextualization.R")
-
-config <- make_default_config(base_dir = "H:/AD_project_directory")
-config$literature_gene_set_file <- "data/published_EOAD_gene_sets.csv"
-config$phenotype_summary_file <- "data/phenotype_level_contextualization.csv"
-
-results <- run_revised_aandd_concordance_contextualization(config)
-```
-
-
-### 7. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation (`07_GSE272082_Orthogonal_Transcriptomic_Validation/`)
-
-**GSE272082_Orthogonal_Transcriptomic_Validation.R**
-
-Orthogonal transcriptomic contextualization using public GSE272082 single-nucleus gene-expression data from sporadic EOAD and control brain samples across prefrontal cortex (PFC), entorhinal cortex (EC), and hippocampus (HIP):
-
-- **Input data**: filtered 10x gene-expression h5 matrices from GSE272082. ATAC fragment files are not required for this RNA-focused module.
-- **Sample annotation**: control and sEOAD samples are mapped to PFC, EC, and HIP using sample-level metadata, including donor identifiers when available.
-- **Cell-type reconstruction**: major cell classes are reconstructed using marker genes aligned with the original study framework, followed by marker-signal confidence filtering.
-- **Pseudobulk differential expression**: counts are aggregated by brain region, reconstructed cell type, and sample; sEOAD versus control comparisons are performed within each region-cell-type stratum using edgeR.
-- **Candidate pathway testing**: pre-specified EOAD/LOAD candidate pathway gene sets are tested against pseudobulk log fold-changes.
-- **Manuscript-facing outputs**: only FDR-significant pseudobulk candidate pathway signals are exported for manuscript use.
-
-This module is designed to support biological triangulation of the pathway-level genetic findings. It should be described as orthogonal single-nucleus transcriptomic contextualization, not independent EOAD genetic replication, donor-level diagnostic validation, or single-cell causal proof.
-
-Outputs correspond to the GSE272082 supplementary figure and supplementary tables:
-
-- `candidate_gene_set_tests_significant.tsv`
-- `candidate_gene_set_tests_manuscript_focus.tsv`
-- `Figure_GSE272082_pseudobulk_gene_set_signals.pdf`
-- `Figure_GSE272082_pseudobulk_gene_set_signals.png`
-- `analysis_summary.txt`
-
-Example usage:
+Set paths at runtime with environment variables rather than editing scripts. Example:
 
 ```r
 Sys.setenv(
-  GSE272082_DATA_DIR = "data/GSE272082",
-  GSE272082_H5_DIR = "data/GSE272082",
-  GSE272082_OUT_DIR = "results/07_GSE272082_orthogonal_validation"
+  EOAD_PROJECT_DIR = "H:/AD_project",
+  EOAD_DATA_DIR = "H:/AD_project/data",
+  EOAD_RESULTS_DIR = "H:/AD_project/results",
+  FINNGEN_EOAD_SUMSTATS = "H:/AD_project/data/GWAS/finngen_R11_AD_EO_EXMORE.gz",
+  BRADLEY_RAW_DIR = "H:/AD_project/data/Bradley_Pottier_2025",
+  BRADLEY_BUILD = "hg38",
+  TARGET_MAGMA_BUILD = "hg19",
+  HG38_TO_HG19_CHAIN = "H:/AD_project/data/reference/hg38ToHg19.over.chain.gz",
+  MAGMA_EXE = "C:/tools/magma/magma.exe",
+  MAGMA_BFILE = "H:/AD_project/data/reference/magma/g1000_eur/g1000_eur",
+  MAGMA_GENE_LOC = "H:/AD_project/data/reference/magma/ENSGv110.coding.genes.txt",
+  MAGMA_SET_ANNOT = "H:/AD_project/data/reference/magma/MSigDB_20231Hs_MAGMA.txt",
+  CANDIDATE_GENESET_FILE = "H:/AD_project/data/candidate_gene_sets/eoad_load_candidate_gene_sets.tsv"
 )
-
-source("07. GSE272082_Orthogonal_Transcriptomic_Validation.R")
 ```
 
-## Requirements
+All newly added Bradley/meta scripts use standard R, Bioconductor, and command-line MAGMA calls. They do not require local wrapper packages.
 
-### R Version
-- R >= 4.2.0
+## Software Dependencies
 
-### R Packages
+Core R packages used across modules include:
+
 ```r
-# CRAN packages
 install.packages(c(
-  "data.table", "dplyr", "tidyr", "ggplot2", "cowplot",
-  "survival", "survminer", "lme4", "lmerTest",
-  "cluster", "factoextra", "pheatmap", "corrplot",
-  "pROC", "lavaan", "logistf", "PRROC",
-  "sandwich", "lmtest", "mediation", "meta",
-  "ggseg", "flexsurv", "dcurves", "patchwork",
-  "viridis", "RColorBrewer", "Seurat", "SeuratObject",
-  "Matrix", "readr", "tibble", "purrr", "stringr",
-  "ggrepel", "forcats", "scales"
-))
-
-# Bioconductor packages
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install(c(
-  "bigsnpr", "clusterProfiler", "org.Hs.eg.db",
-  "org.Mm.eg.db", "biomaRt",
-  "TxDb.Hsapiens.UCSC.hg19.knownGene",
-  "GenomicRanges", "edgeR"
+  "data.table", "dplyr", "tidyr", "readr", "stringr", "tibble", "purrr",
+  "ggplot2", "ggrepel", "scales", "forcats", "broom", "survival",
+  "lmtest", "sandwich", "pROC", "cowplot", "RColorBrewer"
 ))
 ```
 
-## Data Availability
+Selected Bioconductor packages used by specific modules include:
 
-### GWAS Summary Statistics
-| Dataset | Source | Sample Size | Population | PubMed ID | Access |
-|---------|--------|-------------|------------|-----------|--------|
-| **EOAD** | FinnGen R11 | Cases: 1,573; Controls: 199,505 | European (Finnish) | 36653562 | [Download](https://storage.googleapis.com/finngen-public-data-r11/summary_stats/finngen_R11_AD_EO_EXMORE.gz) |
-| **LOAD** | EADB Consortium | Cases: 85,934; Controls: 401,577 | European (Multi-country) | 35379992 | [EBI GWAS](https://www.ebi.ac.uk/gwas/) (GCST90027158) |
-| **Aging** | Timmers et al. | Healthspan: 300,477; Lifespan: 1,012,240; Longevity: 36,745 | European | 32678081, 31413261 | [Edinburgh DataShare](https://datashare.ed.ac.uk/) |
+```r
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install(c(
+  "GenomicRanges", "IRanges", "rtracklayer", "BSgenome",
+  "SNPlocs.Hsapiens.dbSNP155.GRCh37", "clusterProfiler",
+  "org.Hs.eg.db", "enrichplot", "ComplexHeatmap", "edgeR"
+))
+```
 
-#### Dataset Details
+Additional package requirements depend on the module:
 
-**Early-Onset Alzheimer's Disease (EOAD)**
-- Definition: Age of onset < 65 years (ICD-10 code G30.0)
-- Endpoint: AD_EO_EXMORE (strict exclusion criteria removing other dementia subtypes)
-- Genotyping: Illumina Global Screening Array
-- Imputation: SISu v3 Finnish reference panel
+- LDpred2 and genotype handling: `bigsnpr`, `bigstatsr`.
+- Single-nucleus RNA-seq: `Seurat`, `SeuratObject`, `Matrix`, `edgeR`.
+- TWAS and external command-line analyses: S-PrediXcan and MAGMA installed separately.
 
-**Late-Onset Alzheimer's Disease (LOAD)**
-- Composition: 39,106 clinically diagnosed + 46,828 proxy cases
-- Diagnosis: NINCDS-ADRDA or DSM criteria
-- Cohorts: 42 cohorts across Europe and North America
-- SNPs: 21,101,114 SNPs post-QC
+## Analysis Modules
 
-**Multivariate Aging**
-- Healthspan: Years free from major age-related diseases
-- Parental lifespan: Age at death or current age
-- Longevity: Survival to 90th percentile vs 60th percentile
+### 01. EOAD/LOAD Pathway Discovery
 
-### White Matter Microstructure (UK Biobank BIG40)
-| Tract | UKB Field | Sample Size | Description |
-|-------|-----------|-------------|-------------|
-| **Corpus Callosum Body** | 25059 | 33,224 | Primary inter-hemispheric motor/premotor tract |
-| **Cingulum Hippocampus (R)** | 25092 | 33,224 | Limbic tract connecting cingulate-entorhinal-hippocampus |
-| **Uncinate Fasciculus (R)** | 25100 | 33,224 | Temporal-orbitofrontal connection for semantic memory |
-| **Fornix** | 25061 | 33,224 | Primary hippocampal efferent pathway (Papez circuit) |
+Script:
 
-- Phenotype: Mean fractional anisotropy (FA) derived from dMRI processed using tract-based spatial statistics (TBSS)
-- PubMed ID: 30305740
-- Access: [UK Biobank BIG40](https://open.win.ox.ac.uk/ukbiobank/big40/)
+```r
+source("01. EOAD_LOAD_Pathway_Discovery.R")
+```
 
-### Human Spatial Transcriptomic Datasets
-| Dataset | Region | Source | Spatial Units | Clusters | Access |
-|---------|--------|--------|---------------|----------|--------|
-| **LIBD Spatial Atlas** | Anterior Hippocampus | Lieber Institute for Brain Development | 4,992 | 9 unsupervised transcriptomic clusters | [GEO GSE264692](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE264692) |
-| **Maynard et al.** | Dorsolateral Prefrontal Cortex (DLPFC) | Sample 151673 | 3,639 | 8 layer-resolved clusters | [spatialLIBD](http://spatial.libd.org/spatialLIBD/) |
+Purpose:
 
-- Platform: 10X Visium spatial transcriptomics
+- Read precomputed FinnGen EOAD and EADB LOAD MAGMA gene-level outputs.
+- Identify EOAD and LOAD pathway architectures using MAGMA, curated module enrichment, GSEA, gene-property analysis, conditional regression, and LOAD downsampling.
+- Establish the primary discovery framework for EOAD-versus-LOAD heterogeneity.
 
-### Mouse Spatial Transcriptomic Datasets (Cross-Species Validation)
-| Dataset | Description | Source |
-|---------|-------------|--------|
-| **MOSTA Adult Mouse Brain** | Hippocampal subfields, cortical layers, white matter tracts | [MOSTA](https://db.cngb.org/stomics/mosta/) |
-| **MOSTA Embryonic Mouse Brain (E16.5)** | Developmental control | [MOSTA](https://db.cngb.org/stomics/mosta/) |
+Main outputs:
 
-### GSE272082 Single-Nucleus Transcriptomic Data
-| Dataset | Region(s) | Modality Used Here | Description | Access |
-|---------|-----------|--------------------|-------------|--------|
-| **GSE272082** | PFC, EC, HIP | Single-nucleus RNA-seq filtered 10x h5 matrices | Sporadic EOAD and control brain samples used for orthogonal pseudobulk pathway-level transcriptomic contextualization | [GEO GSE272082](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE272082) |
+- EOAD and LOAD MAGMA gene-level summaries.
+- Graham et al. glial module enrichment tables.
+- GO-BP GSEA outputs.
+- Cell-type marker gene-property outputs.
+- LOAD downsampling results.
+- Publication-ready pathway and cell-type specificity figures.
 
-Only filtered gene-expression h5 matrices are required for the RNA-focused orthogonal validation module. ATAC fragment files are not required by `07. GSE272082_Orthogonal_Transcriptomic_Validation.R`.
+Interpretation:
 
-### Validation Cohorts
-| Cohort | N | Description | Access |
-|--------|---|-------------|--------|
-| **ADNI** | 812 | Genome-wide genotyping, structural MRI, CSF biomarkers, longitudinal follow-up | [adni.loni.usc.edu](https://adni.loni.usc.edu/) |
-| **A4 Study** | 1,260 | Cognitively normal adults with elevated amyloid; Centiloid scale | [ida.loni.usc.edu](https://ida.loni.usc.edu/) |
-| **HABS** | 1,490 | Multimodal imaging, plasma p-tau217 (ALZpath Simoa v2), WMH | [habs.mgh.harvard.edu](https://habs.mgh.harvard.edu/) |
-| **AIBL** | 408 | Non-North American replication, longitudinal conversion | [aibl.csiro.au](https://aibl.csiro.au/) |
+- This is the discovery module.
+- LOAD downsampling helps distinguish power-dependent enrichment from disease-subtype architecture.
 
-### LD Reference Panel
-- HapMap3+ EUR variants from the UK Biobank (Privé et al. 2022)
-- 1000 Genomes Phase 3 European panel (~1.2 million HapMap Phase 3 SNPs for LDSC)
-- Available via the bigsnpr R package
+### 02. PRS Construction and TWAS
 
-## External Tools
+Script:
 
-Computational workflows employed publicly available implementations:
+```r
+source("02. PRS_LDpred2_Analysis.R")
+```
 
-| Tool | Version/URL | Purpose |
-|------|-------------|---------|
-| **LDSC** | [GitHub](https://github.com/bulik/ldsc) | Cross-trait genetic correlation and SNP heritability |
-| **HESS** | [GitHub](https://github.com/huwenboshi/hess) | Local SNP heritability partitioning across 1,703 LD-independent regions |
-| **MAGMA** | v1.10, [Website](https://ctg.cncr.nl/software/magma) | Gene-based association and gene-property analysis |
-| **LAVA** | [GitHub](https://github.com/josefin-werme/LAVA) | Local genetic correlation across ~2,495 independent loci |
-| **conjFDR** | [GitHub](https://github.com/precimed/pleiofdr) | Conditional/conjunctional FDR for pleiotropic variant discovery |
-| **FUMA** | v1.5.4, [Web](https://fuma.ctglab.nl/) | Functional mapping and annotation (CADD, RegulomeDB, chromatin states) |
-| **gsMap** | [GitHub](https://github.com/JianYang-Lab/gsMap) | Spatial transcriptomic enrichment mapping (Cauchy combination test) |
-| **S-PrediXcan** | [GitHub](https://github.com/hakyimlab/MetaXcan) | Transcriptome-wide association with GTEx v8 prediction models |
-| **LDpred2** | via bigsnpr R package | Bayesian PRS construction (LDpred2-auto) |
-| **g:Profiler** | [Web](https://biit.cs.ut.ee/gprofiler/gost) | GO/KEGG pathway enrichment of pleiotropic gene sets |
+Purpose:
+
+- Construct genome-wide and pathway-specific PRS using LDpred2.
+- Partition PRS into biologically defined pathway components.
+- Perform S-PrediXcan TWAS across GTEx v8 brain tissues for selected EOAD-relevant genes.
+
+Main analyses:
+
+- LDpred2-auto chain fitting and posterior effect aggregation.
+- Pathway-masked PRS construction.
+- APOE-excluded PRS sensitivity.
+- Brain-region TWAS of genetically predicted expression.
+
+Interpretation:
+
+- This module links GWAS architecture to pathway-specific genetic risk scores and genetically predicted brain expression.
+- The output supports downstream ADNI clinical contextualization.
+
+### 03. ADNI Clinical and Neuroimaging Contextualization
+
+Script:
+
+```r
+source("03. ADNI_Validation.R")
+```
+
+Purpose:
+
+- Project pathway-specific PRS into ADNI genotype-enabled participants.
+- Test associations with MRI, WMH, CSF biomarkers, and MCI-to-dementia conversion.
+
+Main analyses:
+
+- Linear models for neuroimaging and CSF phenotypes.
+- Logistic or Cox models for clinical conversion.
+- Age-stratified and age-interaction analyses.
+- Sliding-window age analyses.
+- Exploratory subtype analyses when retained.
+
+Interpretation:
+
+- ADNI is used as clinical and neuroimaging contextualization.
+- ADNI should not be described as independent EOAD GWAS replication.
+- PRS results should be interpreted as phenotype-level translation of upstream genetic architecture.
+
+### 04. A4, HABS, and AIBL Phenotype-Level Contextualization
+
+Script:
+
+```r
+source("04. A4_HABS_AIBL_Validation.R")
+```
+
+Purpose:
+
+- Extend phenotype-level context across preclinical and clinical cohorts.
+- Evaluate WMH, cognition, amyloid/tau-related measures, and conversion-related outcomes where available.
+
+Main analyses:
+
+- HABS mediation and structural-equation style contextual analyses.
+- A4 phenotype-level models of WMH and cognition.
+- AIBL conversion and diagnostic-context analyses.
+- Cross-cohort forest plots and participant-flow summaries.
+
+Interpretation:
+
+- These cohorts provide translational phenotype context.
+- They should not be used to claim independent genetic replication unless cohort-specific genome-wide genotype and PRS analyses are explicitly available and adequately powered.
+
+### 05_1. EOAD Internal Robustness Analyses
+
+Script:
+
+```r
+source("05_1. EOAD Internal Robustness Analyses")
+```
+
+Purpose:
+
+- Quantify limits of FinnGen EOAD discovery power.
+- Test internal robustness of TWAS and pathway conclusions.
+
+Main analyses:
+
+- Minimum detectable effect/power calculations.
+- Leave-one-gene TWAS sensitivity.
+- APOE/MHC exclusion sensitivity.
+- Matched random gene-set permutation.
+
+Interpretation:
+
+- This module documents discovery-stage uncertainty and guards against overinterpretation of small EOAD discovery sample size.
+
+### 05_2. WMH Sensitivity Analyses
+
+Script:
+
+```r
+source("05_2. WMH Sensitivity Analyses")
+```
+
+Purpose:
+
+- Evaluate scanner and acquisition-related robustness of ADNI WMH/MRI results.
+
+Main analyses:
+
+- FreeSurfer and UCD FLAIR metadata matching.
+- Field-strength sensitivity.
+- Manufacturer/model sensitivity.
+- Batch-effect residualization.
+
+Interpretation:
+
+- This module supports robustness of imaging contextualization.
+- It does not create a new genetic replication layer.
+
+### 06. Concordance and Phenotype-Level Contextualization Framework
+
+Script:
+
+```r
+source("06. Concordance and Phenotype-Level Contextualization")
+```
+
+Purpose:
+
+- Provide a late-stage support framework separating discovery, published EOAD gene-set concordance, phenotype-level context, and boundary/sensitivity analyses.
+
+Main analyses:
+
+- MAGMA gene-level overview.
+- Unbiased GO/KEGG summary.
+- Published EOAD gene-set concordance.
+- APOE/chromosome 19 sensitivity.
+- Targeted 44-gene oligodendrocyte/myelin boundary analysis.
+- ADNI/HABS/A4/AIBL phenotype-level context summaries.
+
+Interpretation:
+
+- The targeted 44-gene oligodendrocyte/myelin result should be treated as a boundary or sensitivity analysis, not as the primary replication result.
+- This distinction is important because the Bradley/Pottier independent EOAD GWAS replication provides the stronger genetic validation layer.
+
+### 07. Bradley/Pottier 2025 EOAD GWAS Replication
+
+Script:
+
+```r
+source("07. Bradley_Pottier_2025_EOAD_GWAS_Replication.R")
+```
+
+Purpose:
+
+- Use Bradley/Pottier 2025 EOAD summary statistics as independent external EOAD genetic replication.
+- Primary replication uses Age65.
+- Age70 is retained as a sensitivity analysis.
+
+Main analyses:
+
+- Standardise Bradley Age65 and Age70 summary statistics.
+- Optionally lift GRCh38 coordinates to GRCh37/hg19.
+- Map chr:pos to rsID with standard Bioconductor dbSNP resources.
+- Run MAGMA gene-level and gene-set analyses.
+- Compare Bradley Age65/Age70 MAGMA outputs with FinnGen EOAD and LOAD MAGMA outputs.
+- Test pre-specified candidate pathway gene sets with APOE-included and APOE-excluded sensitivity.
+
+Main outputs:
+
+```text
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/tables/Table_07_MAGMA_gene_level_overview.tsv
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/tables/Table_07_Bradley_vs_FinnGen_EOAD_gene_level_concordance.tsv
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/tables/Table_07_Bradley_vs_FinnGen_EOAD_MAGMA_gene_set_concordance.tsv
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/tables/Table_07_candidate_pathway_replication_by_MAGMA_rank.tsv
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/tables/Table_07_candidate_pathway_replication_wide.tsv
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/figures/Figure_07_Bradley_Age65_gene_level_concordance_APOE_excluded.png
+results/07_Bradley_Pottier_2025_EOAD_GWAS_replication/figures/Figure_07_Bradley_candidate_pathway_replication_APOE_excluded.png
+```
+
+Interpretation:
+
+- This is the primary independent EOAD genetic replication module.
+- Results should be written as external support for the pathway-level EOAD genetic architecture.
+- Non-replicating candidate sets, especially narrow oligodendrocyte/myelin boundary sets, should not be overstated.
+
+### 08. Bradley/Pottier 2025 SNP/Locus-Level Replication
+
+Script:
+
+```r
+source("08. Bradley_Pottier_2025_SNP_Locus_Replication.R")
+```
+
+Purpose:
+
+- Test whether FinnGen EOAD SNP-level and locus-level signals show directional support in Bradley Age65/Age70.
+
+Main analyses:
+
+- Harmonise FinnGen EOAD and Bradley variants by rsID and alleles.
+- Summarise SNP-level directional concordance across predefined FinnGen P-value thresholds.
+- Define approximately independent FinnGen lead loci and test Bradley support within locus windows.
+- Evaluate candidate pathway gene intervals for SNP-level support, using APOE-excluded primary reporting.
+
+Main outputs:
+
+```text
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_SNP_harmonization_QC.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_SNP_directional_replication_summary.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_FinnGen_EOAD_independent_lead_SNPs.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_Bradley_locus_level_replication_of_FinnGen_leads.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_locus_replication_summary.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/tables/Table_08_candidate_gene_locus_SNP_support_summary.tsv
+results/08_Bradley_Pottier_2025_SNP_locus_replication/figures/Figure_08_SNP_effect_concordance_FinnGen_vs_Bradley_Age65_p1e5.png
+results/08_Bradley_Pottier_2025_SNP_locus_replication/figures/Figure_08_candidate_gene_locus_SNP_support_APOE_excluded.png
+```
+
+Interpretation:
+
+- This module complements script 07 by testing SNP and locus directionality.
+- Locus support should be interpreted as directional external support, not as fine-mapped causality.
+
+### 09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA
+
+Script:
+
+```r
+source("09. FinnGen_Bradley_Age65_IVW_Meta_MAGMA.R")
+```
+
+Purpose:
+
+- Combine FinnGen EOAD and Bradley Age65 EOAD summary statistics using fixed-effect inverse-variance weighted meta-analysis.
+- Re-run MAGMA and candidate pathway support using the meta-enhanced EOAD summary statistics.
+- Export optional meta-enhanced PRS weights.
+
+Main analyses:
+
+- Allele harmonisation between FinnGen EOAD and Bradley Age65.
+- Fixed-effect IVW meta-analysis.
+- Heterogeneity statistics, including Cochran's Q and I2.
+- MAGMA gene-level and gene-set analyses.
+- Candidate pathway support across FinnGen EOAD, Bradley Age65, meta-enhanced EOAD, and LOAD.
+
+Main outputs:
+
+```text
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/FinnGen_Bradley_Age65_IVW_meta_full_summary_statistics.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/PRS_weights/FinnGen_Bradley_Age65_IVW_meta_PRS_weights.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/Table_09_meta_harmonization_QC.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/Table_09_meta_summary_QC.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/Table_09_MAGMA_gene_level_overview.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/Table_09_MAGMA_gene_set_overview.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/tables/Table_09_candidate_pathway_gene_set_support_by_MAGMA_rank.tsv
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/figures/Figure_09_meta_candidate_pathway_heatmap_APOE_excluded.png
+results/09_FinnGen_Bradley_Age65_IVW_meta_MAGMA/figures/Figure_09_top1000_meta_SNPs.png
+```
+
+Interpretation:
+
+- This is a meta-enhanced analysis after external replication.
+- It should not be described as independent replication.
+- If optional PRS weights are projected into ADNI, SNP coverage must be checked carefully. Low pathway SNP coverage should be treated as technical limitation rather than biological null evidence.
+
+### 10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
+
+Script:
+
+```r
+source("10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation")
+```
+
+Purpose:
+
+- Use public GSE272082 single-nucleus gene-expression data from sporadic EOAD and control brain samples to contextualize candidate genetic pathways at region and cell-type levels.
+
+Main analyses:
+
+- Read filtered 10x gene-expression h5 matrices.
+- Reconstruct major cell classes using marker genes aligned with the original study framework.
+- Apply marker-signal confidence filtering.
+- Aggregate pseudobulk expression by brain region, reconstructed cell type, and sample.
+- Test candidate pathway gene-set shifts in sEOAD versus control within region-cell-type strata.
+- Export manuscript-facing FDR-significant pseudobulk candidate pathway signals.
+
+Main outputs:
+
+```text
+results/10_GSE272082_orthogonal_validation/tables/candidate_gene_set_tests_significant.tsv
+results/10_GSE272082_orthogonal_validation/tables/candidate_gene_set_tests_manuscript_focus.tsv
+results/10_GSE272082_orthogonal_validation/figures/Figure_GSE272082_pseudobulk_gene_set_signals.png
+results/10_GSE272082_orthogonal_validation/analysis_summary.txt
+```
+
+Interpretation:
+
+- GSE272082 supports orthogonal biological contextualization.
+- Donor-level module-score separation may be underpowered and should not be used as the main validation claim.
+- Pseudobulk pathway-level results can be used as supportive orthogonal evidence when they are aligned with the genetic pathway architecture.
+
+## Recommended Run Order
+
+Run the modules in this order for the current manuscript structure:
+
+```r
+source("01. EOAD_LOAD_Pathway_Discovery.R")
+source("02. PRS_LDpred2_Analysis.R")
+source("03. ADNI_Validation.R")
+source("04. A4_HABS_AIBL_Validation.R")
+source("05_1. EOAD Internal Robustness Analyses")
+source("05_2. WMH Sensitivity Analyses")
+source("06. Concordance and Phenotype-Level Contextualization")
+source("07. Bradley_Pottier_2025_EOAD_GWAS_Replication.R")
+source("08. Bradley_Pottier_2025_SNP_Locus_Replication.R")
+source("09. FinnGen_Bradley_Age65_IVW_Meta_MAGMA.R")
+source("10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation")
+```
+
+For the Bradley/meta section alone, run:
+
+```r
+source("07. Bradley_Pottier_2025_EOAD_GWAS_Replication.R")
+source("08. Bradley_Pottier_2025_SNP_Locus_Replication.R")
+source("09. FinnGen_Bradley_Age65_IVW_Meta_MAGMA.R")
+```
+
+Script 08 depends on the Bradley MAGMA input files generated by script 07. Script 09 also depends on the Bradley Age65 MAGMA input generated by script 07. Script 10 is independent of scripts 07 to 09 and uses GSE272082 single-nucleus RNA-seq data.
+
+## Candidate Gene-Set File Format
+
+Scripts 07 to 09 expect a pre-specified candidate gene-set file. The recommended format is tab-separated:
+
+```text
+set_name    gene
+Adhesion    APP
+Adhesion    NCAM1
+Amyloid_Clearance    APOE
+Immune_Microglia    TREM2
+Glutamate_Synapse    GRIN2A
+```
+
+Accepted gene columns include `gene`, `GENE`, `gene_id`, `magma_gene_id`, `symbol`, or `gene_symbol`. Accepted set columns include `set_name`, `pathway`, `gene_set`, or `module`.
+
+Use the same candidate gene sets across FinnGen, Bradley, meta-analysis, and GSE272082 to avoid post hoc pathway selection.
+
+## Output Numbering and Manuscript Mapping
+
+The manuscript-facing supplementary table order for the newly added evidence layer is:
+
+- Bradley/Pottier independent EOAD GWAS replication tables first.
+- FinnGen plus Bradley Age65 meta-enhanced tables next.
+- GSE272082 orthogonal single-nucleus transcriptomic tables after the Bradley/meta tables.
+
+The corresponding manuscript logic is:
+
+- Methods: independent EOAD GWAS replication and meta-analysis are described before GSE272082.
+- Results: Bradley/Pottier Age65/Age70 replication and meta-enhanced analysis are reported before GSE272082.
+- Main figure: the most important Bradley/meta/GSE272082 panels can be combined as a final integrated figure, with all extended QC and sensitivity outputs in supplementary materials.
+
+## Interpretation Guardrails
+
+Use the following language boundaries when writing the manuscript:
+
+- Appropriate: “Bradley/Pottier Age65 provided independent EOAD summary-statistics replication.”
+- Appropriate: “Age70 was used as a sensitivity analysis across a broader early/younger-onset definition.”
+- Appropriate: “FinnGen plus Bradley Age65 meta-analysis improved power for downstream gene and pathway analyses.”
+- Appropriate: “GSE272082 provided orthogonal single-nucleus transcriptomic contextualization.”
+- Appropriate: “ADNI provided clinical and neuroimaging contextualization of pathway-specific genetic risk.”
+- Avoid: “GSE272082 independently replicated the genetic findings.”
+- Avoid: “ADNI independently replicated the EOAD GWAS.”
+- Avoid: “Meta-analysis is an independent validation dataset.”
+- Avoid: “The targeted 44-gene oligodendrocyte/myelin set is the primary replicated genetic mechanism” unless the independent replication results support that claim.
 
 ## Reproducibility Notes
 
-1. All scripts assume GWAS summary statistics have been downloaded and formatted with columns: `chr`, `pos`, `a0`, `a1`, `beta`, `beta_se`, `p`, `n_eff`.
-2. ADNI, A4, HABS, and AIBL data require approved data use agreements from their respective consortia.
-3. File paths in the scripts use placeholder variables (e.g., `base_dir`, `data_dir`) that should be modified to match your local directory structure.
-4. LDpred2 chromosome-wise SFBM computation is memory-intensive; 32 GB RAM recommended.
-5. MAGMA gene-based analysis requires pre-computed annotation files (`.genes.annot`) generated from the 1000 Genomes Phase 3 EUR reference panel.
-6. S-PrediXcan requires GTEx v8 prediction model databases (`.db` files) and covariance files for each brain tissue.
-7. gsMap requires spatial transcriptomic data in standard 10X Visium format; human gene symbols are converted to mouse orthologs via Ensembl BioMart for cross-species analyses.
+- Large data files are not included in this repository.
+- Controlled-access or consortium data should be obtained under the appropriate data-use agreements.
+- Path variables should be set with `Sys.setenv()` for local runs.
+- MAGMA output file names can differ by MAGMA version. Scripts 07 and 09 attempt to detect common `.genes.out`, `.genes.out.txt`, `.gsa.out`, and `.gsa.out.txt` forms.
+- If Bradley/Pottier files have already been converted to rsID/hg19 MAGMA input format, set `BRADLEY_AGE65_MAGMA_INPUT` and `BRADLEY_AGE70_MAGMA_INPUT` to skip raw coordinate conversion.
+- If raw Bradley/Pottier files are used, install the required Bioconductor packages and provide the correct chain file when coordinate conversion is needed.
+- If optional upstream inputs are unavailable, affected downstream summaries should be marked as not run rather than silently omitted.
 
-8. The GSE272082 module is an orthogonal transcriptomic contextualization analysis. It exports FDR-significant pseudobulk candidate pathway results and does not perform donor-level module-score validation or independent EOAD genetic replication.
+## Citation
+
+If you use this code, please cite the associated manuscript and the original data resources, including FinnGen, EADB, Bradley/Pottier 2025 EOAD GWAS, ADNI, A4, HABS, AIBL, GTEx, LIBD, Maynard et al. DLPFC spatial transcriptomics, and GSE272082.
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
-
-## Contact
-
-For questions regarding the code, please open an issue or contact the corresponding author.
-
-## Acknowledgments
-
-Data collection and sharing for ADNI was funded by the Alzheimer's Disease Neuroimaging Initiative (National Institutes of Health Grant U01 AG024904) and DOD ADNI (Department of Defense award number W81XWH-12-2-0012). The A4 Study is a secondary prevention trial in preclinical Alzheimer's disease funded by Eli Lilly and Company, the Alzheimer's Association, and the National Institute on Aging. HABS is funded by the National Institute on Aging (P01 AG036694). AIBL is funded by the CSIRO, the Science and Industry Endowment Fund, and the National Health and Medical Research Council of Australia.
-
-We thank the FinnGen Consortium, the European Alzheimer & Dementia Biobank (EADB) Consortium, and the UK Biobank for providing access to GWAS summary statistics. We thank all participants and their families for their contributions to research.
+This repository is released under the MIT License. See `LICENSE` for details.
