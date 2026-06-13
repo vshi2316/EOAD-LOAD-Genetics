@@ -1,5 +1,5 @@
 # ==============================================================================
-# 07. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
+# 10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
 # ==============================================================================
 rm(list = ls())
 options(stringsAsFactors = FALSE)
