@@ -1,0 +1,561 @@
+# ==============================================================================
+# 09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis
+# ==============================================================================
+
+rm(list = ls())
+options(stringsAsFactors = FALSE)
+set.seed(20260613)
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(scales)
+})
+
+# ------------------------------------------------------------------------------
+# 1. User configuration
+# ------------------------------------------------------------------------------
+
+PROJECT_DIR <- Sys.getenv("EOAD_PROJECT_DIR", unset = getwd())
+DATA_DIR <- Sys.getenv("EOAD_DATA_DIR", unset = file.path(PROJECT_DIR, "data"))
+RESULTS_DIR <- Sys.getenv("EOAD_RESULTS_DIR", unset = file.path(PROJECT_DIR, "results"))
+
+OUT_DIR <- Sys.getenv(
+  "META_EOAD_OUT_DIR",
+  unset = file.path(RESULTS_DIR, "09_FinnGen_Bradley_Age65_IVW_meta_MAGMA")
+)
+TAB_DIR <- file.path(OUT_DIR, "tables")
+FIG_DIR <- file.path(OUT_DIR, "figures")
+MAGMA_DIR <- file.path(OUT_DIR, "magma")
+INPUT_DIR <- file.path(OUT_DIR, "magma_input")
+PRS_DIR <- file.path(OUT_DIR, "PRS_weights")
+dir.create(TAB_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(FIG_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(MAGMA_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(INPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(PRS_DIR, recursive = TRUE, showWarnings = FALSE)
+
+FINNGEN_EOAD_SUMSTATS <- Sys.getenv(
+  "FINNGEN_EOAD_SUMSTATS",
+  unset = file.path(DATA_DIR, "GWAS", "finngen_R11_AD_EO_EXMORE.gz")
+)
+BRADLEY_AGE65_INPUT <- Sys.getenv(
+  "BRADLEY_AGE65_MAGMA_INPUT",
+  unset = file.path(RESULTS_DIR, "07_Bradley_Pottier_2025_EOAD_GWAS_replication", "magma_input", "Bradley_NHW_Age65_MAGMA_input_rsID_hg19.tsv")
+)
+
+CURRENT_EOAD_GENES <- Sys.getenv(
+  "FINNGEN_EOAD_MAGMA_GENES",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.genes.out.txt")
+)
+CURRENT_LOAD_GENES <- Sys.getenv(
+  "LOAD_MAGMA_GENES",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.genes.out.txt")
+)
+BRADLEY_AGE65_GENES <- Sys.getenv(
+  "BRADLEY_AGE65_MAGMA_GENES",
+  unset = file.path(RESULTS_DIR, "07_Bradley_Pottier_2025_EOAD_GWAS_replication", "magma", "Bradley_NHW_Age65", "Bradley_NHW_Age65.genes.out.txt")
+)
+CURRENT_EOAD_GSA <- Sys.getenv(
+  "FINNGEN_EOAD_MAGMA_GSA",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.gsa.out.txt")
+)
+CURRENT_LOAD_GSA <- Sys.getenv(
+  "LOAD_MAGMA_GSA",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.gsa.out.txt")
+)
+BRADLEY_AGE65_GSA <- Sys.getenv(
+  "BRADLEY_AGE65_MAGMA_GSA",
+  unset = file.path(RESULTS_DIR, "07_Bradley_Pottier_2025_EOAD_GWAS_replication", "magma", "Bradley_NHW_Age65", "Bradley_NHW_Age65.gsa.out.txt")
+)
+CANDIDATE_GENESET_FILE <- Sys.getenv(
+  "CANDIDATE_GENESET_FILE",
+  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_load_candidate_gene_sets.tsv")
+)
+
+MAGMA_EXE <- Sys.getenv("MAGMA_EXE", unset = "magma")
+MAGMA_BFILE <- Sys.getenv(
+  "MAGMA_BFILE",
+  unset = file.path(DATA_DIR, "reference", "magma", "g1000_eur", "g1000_eur")
+)
+MAGMA_GENE_LOC <- Sys.getenv(
+  "MAGMA_GENE_LOC",
+  unset = file.path(DATA_DIR, "reference", "magma", "ENSGv110.coding.genes.txt")
+)
+MAGMA_SET_ANNOT <- Sys.getenv(
+  "MAGMA_SET_ANNOT",
+  unset = file.path(DATA_DIR, "reference", "magma", "MSigDB_20231Hs_MAGMA.txt")
+)
+RUN_MAGMA <- tolower(Sys.getenv("RUN_MAGMA", unset = "true")) %in% c("true", "1", "yes", "y")
+MIN_GENE_SET_OVERLAP <- as.integer(Sys.getenv("MIN_GENE_SET_OVERLAP", unset = "5"))
+
+META_TAG <- "FinnGen_Bradley_Age65_IVW_Meta_EOAD"
+APOE_CHR <- 19L
+APOE_START <- 44000000L
+APOE_END <- 46000000L
+
+# ------------------------------------------------------------------------------
+# 2. Helper functions
+# ------------------------------------------------------------------------------
+
+message_step <- function(...) {
+  message("\n", paste0(...))
+}
+
+not_apoe <- function(x) {
+  is.na(x) | !x
+}
+
+first_existing <- function(...) {
+  x <- unlist(list(...), use.names = FALSE)
+  x <- x[nzchar(x)]
+  hit <- x[file.exists(x)]
+  if (length(hit) == 0) return(x[1])
+  hit[1]
+}
+
+detect_col <- function(dt, candidates, required = TRUE, label = "column") {
+  hit <- intersect(candidates, names(dt))
+  if (length(hit) > 0) return(hit[1])
+  lower_map <- setNames(names(dt), tolower(names(dt)))
+  hit_lower <- intersect(tolower(candidates), names(lower_map))
+  if (length(hit_lower) > 0) return(lower_map[[hit_lower[1]]])
+  if (required) {
+    stop("Could not identify ", label, ". Tried: ", paste(candidates, collapse = ", "))
+  }
+  NA_character_
+}
+
+clean_chr <- function(x) {
+  x <- gsub("^chr", "", as.character(x), ignore.case = TRUE)
+  x[x %in% c("X", "x")] <- "23"
+  suppressWarnings(as.integer(x))
+}
+
+clean_allele <- function(x) {
+  toupper(gsub("[^ACGT]", "", as.character(x)))
+}
+
+clean_rsid <- function(x) {
+  x <- as.character(x)
+  x <- ifelse(grepl("^rs[0-9]+$", x, ignore.case = TRUE), paste0("rs", sub("^rs", "", x, ignore.case = TRUE)), NA_character_)
+  x
+}
+
+standardise_for_meta <- function(path, dataset) {
+  message_step("Reading summary statistics for meta-analysis: ", dataset)
+  dt <- fread(path, nThread = max(1, parallel::detectCores() - 1), showProgress = TRUE)
+  snp_col <- detect_col(dt, c("SNP", "rsid", "rsids", "ID", "variant_id", "MarkerName"), label = "SNP column")
+  chr_col <- detect_col(dt, c("CHR", "CHROM", "#CHROM", "chromosome", "chrom"), required = FALSE)
+  bp_col <- detect_col(dt, c("BP", "POS", "position", "base_pair_location", "bp"), required = FALSE)
+  a1_col <- detect_col(dt, c("A1", "EA", "effect_allele", "ALT", "alt"), label = "effect allele column")
+  a2_col <- detect_col(dt, c("A2", "NEA", "other_allele", "REF", "ref"), label = "other allele column")
+  beta_col <- detect_col(dt, c("BETA", "beta", "Effect", "effect"), label = "beta column")
+  se_col <- detect_col(dt, c("SE", "se", "standard_error", "SEBETA", "sebeta"), label = "SE column")
+  p_col <- detect_col(dt, c("P", "p", "PVAL", "pval", "p_value"), required = FALSE)
+  log10p_col <- detect_col(dt, c("LOG10_P", "LOG10P", "neglog10_p", "minus_log10_p"), required = FALSE)
+  n_col <- detect_col(dt, c("N", "OBS_CT", "N_total", "N_TOTAL", "sample_size"), required = FALSE)
+
+  out <- data.table(
+    dataset = dataset,
+    SNP = clean_rsid(dt[[snp_col]]),
+    CHR = if (!is.na(chr_col)) clean_chr(dt[[chr_col]]) else NA_integer_,
+    BP = if (!is.na(bp_col)) suppressWarnings(as.integer(dt[[bp_col]])) else NA_integer_,
+    A1 = clean_allele(dt[[a1_col]]),
+    A2 = clean_allele(dt[[a2_col]]),
+    BETA = suppressWarnings(as.numeric(dt[[beta_col]])),
+    SE = suppressWarnings(as.numeric(dt[[se_col]])),
+    P = if (!is.na(p_col)) suppressWarnings(as.numeric(dt[[p_col]])) else NA_real_,
+    N = if (!is.na(n_col)) suppressWarnings(as.numeric(dt[[n_col]])) else NA_real_
+  )
+  if (all(is.na(out$P)) && !is.na(log10p_col)) {
+    out[, P := 10^(-suppressWarnings(as.numeric(dt[[log10p_col]])))]
+  }
+  out <- out[
+    !is.na(SNP) &
+      !is.na(BETA) & !is.na(SE) & SE > 0 &
+      !is.na(P) & P > 0 & P <= 1 &
+      nchar(A1) == 1 & nchar(A2) == 1 & A1 != A2
+  ]
+  out[, P := pmax(P, .Machine$double.xmin)]
+  out <- out[order(P)]
+  out <- out[!duplicated(SNP)]
+  out[]
+}
+
+harmonize_for_meta <- function(finngen, bradley) {
+  message_step("Harmonizing FinnGen EOAD and Bradley Age65 for IVW meta-analysis")
+  x <- merge(
+    finngen,
+    bradley,
+    by = "SNP",
+    suffixes = c("_FINNGEN", "_BRADLEY")
+  )
+  x[, allele_match := A1_FINNGEN == A1_BRADLEY & A2_FINNGEN == A2_BRADLEY]
+  x[, allele_flip := A1_FINNGEN == A2_BRADLEY & A2_FINNGEN == A1_BRADLEY]
+  x <- x[allele_match | allele_flip]
+  x[, BETA_BRADLEY_ALIGNED := fifelse(allele_match, BETA_BRADLEY, -BETA_BRADLEY)]
+  x[, A1 := A1_FINNGEN]
+  x[, A2 := A2_FINNGEN]
+  x[, CHR := fifelse(!is.na(CHR_FINNGEN), CHR_FINNGEN, CHR_BRADLEY)]
+  x[, BP := fifelse(!is.na(BP_FINNGEN), BP_FINNGEN, BP_BRADLEY)]
+  x[]
+}
+
+ivw_meta <- function(h) {
+  w1 <- 1 / (h$SE_FINNGEN^2)
+  w2 <- 1 / (h$SE_BRADLEY^2)
+  beta_meta <- (h$BETA_FINNGEN * w1 + h$BETA_BRADLEY_ALIGNED * w2) / (w1 + w2)
+  se_meta <- sqrt(1 / (w1 + w2))
+  z_meta <- beta_meta / se_meta
+  p_meta <- 2 * pnorm(abs(z_meta), lower.tail = FALSE)
+  q <- w1 * (h$BETA_FINNGEN - beta_meta)^2 + w2 * (h$BETA_BRADLEY_ALIGNED - beta_meta)^2
+  i2 <- pmax(0, (q - 1) / q)
+  i2[!is.finite(i2)] <- 0
+  data.table(
+    SNP = h$SNP,
+    CHR = h$CHR,
+    BP = h$BP,
+    A1 = h$A1,
+    A2 = h$A2,
+    BETA = beta_meta,
+    SE = se_meta,
+    Z = z_meta,
+    P = pmax(p_meta, .Machine$double.xmin),
+    N_FINNGEN = h$N_FINNGEN,
+    N_BRADLEY = h$N_BRADLEY,
+    BETA_FINNGEN = h$BETA_FINNGEN,
+    SE_FINNGEN = h$SE_FINNGEN,
+    P_FINNGEN = h$P_FINNGEN,
+    BETA_BRADLEY = h$BETA_BRADLEY_ALIGNED,
+    SE_BRADLEY = h$SE_BRADLEY,
+    P_BRADLEY = h$P_BRADLEY,
+    COCHRAN_Q = q,
+    HET_P = pchisq(q, df = 1, lower.tail = FALSE),
+    I2 = i2,
+    SAME_DIRECTION = sign(h$BETA_FINNGEN) == sign(h$BETA_BRADLEY_ALIGNED),
+    APOE_REGION = h$CHR == APOE_CHR & h$BP >= APOE_START & h$BP <= APOE_END
+  )[order(P)]
+}
+
+run_magma_for_meta <- function(magma_input_file) {
+  out_prefix <- file.path(MAGMA_DIR, META_TAG, META_TAG)
+  dir.create(dirname(out_prefix), recursive = TRUE, showWarnings = FALSE)
+
+  genes_out <- first_existing(paste0(out_prefix, ".genes.out"), paste0(out_prefix, ".genes.out.txt"))
+  genes_raw <- first_existing(paste0(out_prefix, ".genes.raw"))
+  gsa_out <- first_existing(paste0(out_prefix, ".gsa.out"), paste0(out_prefix, ".gsa.out.txt"))
+
+  if (!RUN_MAGMA) {
+    return(data.table(dataset = META_TAG, genes_out = genes_out, genes_raw = genes_raw, gsa_out = gsa_out, status = "not_run"))
+  }
+  if (!file.exists(MAGMA_GENE_LOC)) stop("MAGMA gene-location file not found: ", MAGMA_GENE_LOC)
+  if (!file.exists(paste0(MAGMA_BFILE, ".bed"))) stop("MAGMA bfile prefix not found: ", MAGMA_BFILE)
+
+  dt <- fread(magma_input_file)
+  snp_loc <- file.path(INPUT_DIR, paste0(META_TAG, "_MAGMA_snp_loc.tsv"))
+  pval_file <- file.path(INPUT_DIR, paste0(META_TAG, "_MAGMA_pval.tsv"))
+  fwrite(dt[, .(SNP, CHR, BP)], snp_loc, sep = "\t", col.names = FALSE, quote = FALSE)
+  fwrite(dt[, .(SNP, P, N)], pval_file, sep = "\t", quote = FALSE)
+
+  if (!file.exists(genes_raw) || !file.exists(genes_out)) {
+    message_step("Running MAGMA gene analysis for meta-enhanced EOAD")
+    system2(MAGMA_EXE, c("--annotate", "--snp-loc", snp_loc, "--gene-loc", MAGMA_GENE_LOC, "--out", out_prefix))
+    annot_file <- first_existing(paste0(out_prefix, ".genes.annot"), paste0(out_prefix, ".genes.annot.txt"))
+    system2(MAGMA_EXE, c(
+      "--bfile", MAGMA_BFILE,
+      "--pval", pval_file, "use=SNP,P", "ncol=N",
+      "--gene-annot", annot_file,
+      "--out", out_prefix
+    ))
+  }
+  if (file.exists(MAGMA_SET_ANNOT) && !file.exists(gsa_out)) {
+    message_step("Running MAGMA gene-set analysis for meta-enhanced EOAD")
+    genes_raw <- first_existing(paste0(out_prefix, ".genes.raw"))
+    system2(MAGMA_EXE, c("--gene-results", genes_raw, "--set-annot", MAGMA_SET_ANNOT, "--out", paste0(out_prefix, ".gsa")))
+    gsa_out <- first_existing(paste0(out_prefix, ".gsa.gsa.out"), paste0(out_prefix, ".gsa.out"), paste0(out_prefix, ".gsa.out.txt"))
+  }
+  data.table(dataset = META_TAG, genes_out = first_existing(genes_out), genes_raw = first_existing(genes_raw), gsa_out = first_existing(gsa_out), status = "completed")
+}
+
+read_magma_genes <- function(path, dataset) {
+  if (!file.exists(path)) stop("MAGMA gene output not found: ", path)
+  dt <- fread(path)
+  gene_col <- detect_col(dt, c("GENE", "gene", "GENE_ID", "gene_id"), label = "MAGMA gene column")
+  p_col <- detect_col(dt, c("P", "p", "PVALUE", "p_value"), label = "MAGMA P column")
+  z_col <- detect_col(dt, c("ZSTAT", "Z", "z"), required = FALSE)
+  chr_col <- detect_col(dt, c("CHR", "chromosome"), required = FALSE)
+  start_col <- detect_col(dt, c("START", "start"), required = FALSE)
+  stop_col <- detect_col(dt, c("STOP", "END", "stop", "end"), required = FALSE)
+  symbol_col <- detect_col(dt, c("SYMBOL", "symbol", "GENE_NAME", "gene_name"), required = FALSE)
+  out <- data.table(
+    dataset = dataset,
+    GENE = as.character(dt[[gene_col]]),
+    SYMBOL = if (!is.na(symbol_col)) toupper(as.character(dt[[symbol_col]])) else toupper(as.character(dt[[gene_col]])),
+    P = as.numeric(dt[[p_col]]),
+    ZSTAT = if (!is.na(z_col)) as.numeric(dt[[z_col]]) else qnorm(pmax(.Machine$double.xmin, 1 - as.numeric(dt[[p_col]]) / 2)),
+    CHR = if (!is.na(chr_col)) clean_chr(dt[[chr_col]]) else NA_integer_,
+    START = if (!is.na(start_col)) as.integer(dt[[start_col]]) else NA_integer_,
+    STOP = if (!is.na(stop_col)) as.integer(dt[[stop_col]]) else NA_integer_
+  )
+  out[, FDR := p.adjust(P, "BH")]
+  out[, APOE_REGION := CHR == APOE_CHR & !is.na(START) & !is.na(STOP) & START <= APOE_END & STOP >= APOE_START]
+  out[]
+}
+
+read_magma_gsa <- function(path, dataset) {
+  if (!file.exists(path)) return(NULL)
+  dt <- tryCatch(fread(path, fill = TRUE), error = function(e) fread(path, skip = "VARIABLE", fill = TRUE))
+  setnames(dt, names(dt), gsub("^#", "", names(dt)))
+  set_col <- detect_col(dt, c("VARIABLE", "FULL_NAME", "GENESET", "SET", "NAME"), label = "MAGMA gene-set column")
+  p_col <- detect_col(dt, c("P", "P-value", "PVALUE"), label = "MAGMA gene-set P column")
+  beta_col <- detect_col(dt, c("BETA", "BETA_STD", "ZSTAT", "Z"), required = FALSE)
+  data.table(
+    dataset = dataset,
+    gene_set = as.character(dt[[set_col]]),
+    statistic = if (!is.na(beta_col)) suppressWarnings(as.numeric(dt[[beta_col]])) else NA_real_,
+    P = suppressWarnings(as.numeric(dt[[p_col]]))
+  )[
+    !is.na(P)
+  ][
+    , FDR := p.adjust(P, "BH")
+  ][]
+}
+
+read_candidate_gene_sets <- function(path) {
+  if (!file.exists(path)) {
+    warning("Candidate gene-set file not found; candidate pathway tests will be skipped: ", path)
+    return(NULL)
+  }
+  gs <- fread(path)
+  set_col <- detect_col(gs, c("set_name", "pathway", "gene_set", "module"), label = "candidate set column")
+  gene_col <- detect_col(gs, c("GENE", "gene", "gene_id", "magma_gene_id", "symbol", "gene_symbol"), label = "candidate gene column")
+  unique(data.table(set_name = as.character(gs[[set_col]]), gene_token = toupper(as.character(gs[[gene_col]]))))
+}
+
+candidate_rank_test <- function(magma_dt, candidate_sets, dataset, analysis) {
+  if (is.null(candidate_sets)) return(NULL)
+  dt <- copy(magma_dt)
+  if (analysis == "APOE_excluded") dt <- dt[not_apoe(APOE_REGION)]
+  rbindlist(lapply(split(candidate_sets, candidate_sets$set_name), function(gs) {
+    in_set <- dt[GENE %in% gs$gene_token | SYMBOL %in% gs$gene_token]
+    bg <- dt[!(GENE %in% gs$gene_token | SYMBOL %in% gs$gene_token)]
+    if (nrow(in_set) < MIN_GENE_SET_OVERLAP || nrow(bg) < 100) {
+      return(data.table(
+        dataset = dataset, analysis = analysis, set_name = gs$set_name[1],
+        n_genes = nrow(in_set), mean_z = NA_real_, median_z = NA_real_,
+        wilcox_p = NA_real_, status = "insufficient_overlap"
+      ))
+    }
+    wt <- wilcox.test(in_set$ZSTAT, bg$ZSTAT, alternative = "greater")
+    data.table(
+      dataset = dataset,
+      analysis = analysis,
+      set_name = gs$set_name[1],
+      n_genes = nrow(in_set),
+      mean_z = mean(in_set$ZSTAT, na.rm = TRUE),
+      median_z = median(in_set$ZSTAT, na.rm = TRUE),
+      wilcox_p = wt$p.value,
+      status = "tested"
+    )
+  }), use.names = TRUE, fill = TRUE)[
+    , wilcox_fdr := p.adjust(wilcox_p, "BH"), by = .(dataset, analysis)
+  ][]
+}
+
+gsa_overview <- function(...) {
+  gsa_list <- list(...)
+  rbindlist(lapply(gsa_list, function(x) {
+    if (is.null(x)) return(NULL)
+    data.table(
+      dataset = x$dataset[1],
+      n_gene_sets = nrow(x),
+      n_fdr_005 = sum(x$FDR < 0.05, na.rm = TRUE),
+      min_p = min(x$P, na.rm = TRUE)
+    )
+  }), fill = TRUE)
+}
+
+plot_candidate_heatmap <- function(candidate_results) {
+  x <- candidate_results[status == "tested" & analysis == "APOE_excluded"]
+  if (nrow(x) == 0) return(invisible(NULL))
+  x[, label := ifelse(!is.na(wilcox_fdr) & wilcox_fdr < 0.05, "*", "")]
+  p <- ggplot(x, aes(dataset, set_name, fill = mean_z)) +
+    geom_tile(color = "white", linewidth = 0.4) +
+    geom_text(aes(label = label), size = 4.2) +
+    scale_fill_gradient2(low = "#2c5c88", mid = "white", high = "#b24745", midpoint = 0, name = "Mean MAGMA Z") +
+    labs(
+      title = "Meta-enhanced EOAD candidate pathway support",
+      subtitle = "APOE-excluded; asterisk indicates FDR < 0.05 in rank-based gene-set test",
+      x = NULL,
+      y = NULL
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1), panel.grid = element_blank())
+  ggsave(file.path(FIG_DIR, "Figure_09_meta_candidate_pathway_heatmap_APOE_excluded.pdf"), p, width = 8.5, height = 5.8)
+  ggsave(file.path(FIG_DIR, "Figure_09_meta_candidate_pathway_heatmap_APOE_excluded.png"), p, width = 8.5, height = 5.8, dpi = 300)
+}
+
+plot_top_meta_snps <- function(meta_dt) {
+  x <- meta_dt[seq_len(min(nrow(meta_dt), 1000))]
+  x[, APOE_STATUS := ifelse(APOE_REGION, "APOE region", "Outside APOE")]
+  p <- ggplot(x, aes(-log10(P), BETA, color = APOE_STATUS)) +
+    geom_hline(yintercept = 0, color = "grey85") +
+    geom_point(alpha = 0.75, size = 1.2) +
+    scale_color_manual(values = c("APOE region" = "#b24745", "Outside APOE" = "#496f8a")) +
+    labs(
+      title = "Top meta-enhanced EOAD SNPs",
+      subtitle = "FinnGen EOAD + Bradley Age65 IVW meta-analysis",
+      x = "-log10(meta P)",
+      y = "Meta beta",
+      color = NULL
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", panel.grid.minor = element_blank())
+  ggsave(file.path(FIG_DIR, "Figure_09_top1000_meta_SNPs.pdf"), p, width = 7, height = 4.8)
+  ggsave(file.path(FIG_DIR, "Figure_09_top1000_meta_SNPs.png"), p, width = 7, height = 4.8, dpi = 300)
+}
+
+# ------------------------------------------------------------------------------
+# 3. Harmonize and meta-analyze
+# ------------------------------------------------------------------------------
+
+message_step("09. FinnGen EOAD + Bradley Age65 IVW meta-enhanced MAGMA analysis")
+
+if (!file.exists(FINNGEN_EOAD_SUMSTATS)) stop("FinnGen EOAD summary statistics not found: ", FINNGEN_EOAD_SUMSTATS)
+if (!file.exists(BRADLEY_AGE65_INPUT)) stop("Bradley Age65 input not found. Run script 07 first or set BRADLEY_AGE65_MAGMA_INPUT.")
+
+finngen <- standardise_for_meta(FINNGEN_EOAD_SUMSTATS, "FinnGen_EOAD")
+bradley65 <- standardise_for_meta(BRADLEY_AGE65_INPUT, "Bradley_NHW_Age65")
+harm <- harmonize_for_meta(finngen, bradley65)
+meta <- ivw_meta(harm)
+
+harm_qc <- data.table(
+  n_finngen_variants = nrow(finngen),
+  n_bradley_age65_variants = nrow(bradley65),
+  n_harmonized_variants = nrow(harm),
+  n_meta_variants = nrow(meta),
+  same_direction_fraction = mean(meta$SAME_DIRECTION, na.rm = TRUE),
+  n_apoe_region = sum(meta$APOE_REGION, na.rm = TRUE)
+)
+fwrite(harm_qc, file.path(TAB_DIR, "Table_09_meta_harmonization_QC.tsv"), sep = "\t")
+
+meta_file <- file.path(TAB_DIR, "FinnGen_Bradley_Age65_IVW_meta_full_summary_statistics.tsv")
+fwrite(meta, meta_file, sep = "\t", quote = FALSE, na = "NA")
+fwrite(meta[seq_len(min(nrow(meta), 1000))], file.path(TAB_DIR, "Table_09_top1000_meta_SNPs.tsv"), sep = "\t")
+
+prs_weights <- meta[, .(SNP, CHR, BP, A1, A2, BETA, SE, P)]
+fwrite(prs_weights, file.path(PRS_DIR, "FinnGen_Bradley_Age65_IVW_meta_PRS_weights.tsv"), sep = "\t", quote = FALSE, na = "NA")
+
+meta_qc <- data.table(
+  n_meta_variants = nrow(meta),
+  min_p = min(meta$P, na.rm = TRUE),
+  n_p_lt_5e_8 = sum(meta$P < 5e-8, na.rm = TRUE),
+  n_p_lt_1e_5 = sum(meta$P < 1e-5, na.rm = TRUE),
+  median_i2 = median(meta$I2, na.rm = TRUE),
+  n_het_p_lt_005 = sum(meta$HET_P < 0.05, na.rm = TRUE),
+  meta_summary_file = meta_file
+)
+fwrite(meta_qc, file.path(TAB_DIR, "Table_09_meta_summary_QC.tsv"), sep = "\t")
+
+# ------------------------------------------------------------------------------
+# 4. MAGMA input and MAGMA analysis
+# ------------------------------------------------------------------------------
+
+magma_input <- meta[, .(
+  SNP, CHR, BP, A1, A2, BETA, SE, P,
+  N = ifelse(is.na(N_FINNGEN), 0, N_FINNGEN) + ifelse(is.na(N_BRADLEY), 0, N_BRADLEY)
+)]
+magma_input <- magma_input[!duplicated(SNP)]
+magma_input_file <- file.path(INPUT_DIR, paste0(META_TAG, "_MAGMA_input.tsv"))
+fwrite(magma_input, magma_input_file, sep = "\t", quote = FALSE, na = "NA")
+
+magma_input_qc <- data.table(
+  n_input_snps = nrow(magma_input),
+  min_p = min(magma_input$P, na.rm = TRUE),
+  n_p_lt_5e_8 = sum(magma_input$P < 5e-8, na.rm = TRUE),
+  n_p_lt_1e_5 = sum(magma_input$P < 1e-5, na.rm = TRUE),
+  input_file = magma_input_file
+)
+fwrite(magma_input_qc, file.path(TAB_DIR, "Table_09_MAGMA_input_QC.tsv"), sep = "\t")
+
+magma_outputs <- run_magma_for_meta(magma_input_file)
+fwrite(magma_outputs, file.path(TAB_DIR, "Table_09_MAGMA_output_files.tsv"), sep = "\t")
+
+# ------------------------------------------------------------------------------
+# 5. Summarize MAGMA and candidate pathway support
+# ------------------------------------------------------------------------------
+
+current_eoad_genes <- read_magma_genes(CURRENT_EOAD_GENES, "FinnGen_EOAD")
+current_load_genes <- read_magma_genes(CURRENT_LOAD_GENES, "LOAD")
+bradley65_genes <- read_magma_genes(BRADLEY_AGE65_GENES, "Bradley_NHW_Age65")
+meta_genes <- read_magma_genes(magma_outputs$genes_out[1], "Meta_FinnGen_Bradley_Age65")
+
+gene_overview <- rbindlist(lapply(list(current_eoad_genes, bradley65_genes, meta_genes, current_load_genes), function(x) {
+  data.table(
+    dataset = x$dataset[1],
+    n_genes = nrow(x),
+    n_fdr_005 = sum(x$FDR < 0.05, na.rm = TRUE),
+    n_bonferroni_005 = sum(x$P < 0.05 / nrow(x), na.rm = TRUE),
+    min_p = min(x$P, na.rm = TRUE)
+  )
+}), fill = TRUE)
+fwrite(gene_overview, file.path(TAB_DIR, "Table_09_MAGMA_gene_level_overview.tsv"), sep = "\t")
+
+current_eoad_gsa <- read_magma_gsa(CURRENT_EOAD_GSA, "FinnGen_EOAD")
+bradley65_gsa <- read_magma_gsa(BRADLEY_AGE65_GSA, "Bradley_NHW_Age65")
+meta_gsa <- read_magma_gsa(magma_outputs$gsa_out[1], "Meta_FinnGen_Bradley_Age65")
+current_load_gsa <- read_magma_gsa(CURRENT_LOAD_GSA, "LOAD")
+gsa_summary <- gsa_overview(current_eoad_gsa, bradley65_gsa, meta_gsa, current_load_gsa)
+if (nrow(gsa_summary) > 0) fwrite(gsa_summary, file.path(TAB_DIR, "Table_09_MAGMA_gene_set_overview.tsv"), sep = "\t")
+
+candidate_sets <- read_candidate_gene_sets(CANDIDATE_GENESET_FILE)
+candidate_results <- rbindlist(list(
+  candidate_rank_test(current_eoad_genes, candidate_sets, "FinnGen_EOAD", "APOE_included"),
+  candidate_rank_test(current_eoad_genes, candidate_sets, "FinnGen_EOAD", "APOE_excluded"),
+  candidate_rank_test(bradley65_genes, candidate_sets, "Bradley_NHW_Age65", "APOE_included"),
+  candidate_rank_test(bradley65_genes, candidate_sets, "Bradley_NHW_Age65", "APOE_excluded"),
+  candidate_rank_test(meta_genes, candidate_sets, "Meta_FinnGen_Bradley_Age65", "APOE_included"),
+  candidate_rank_test(meta_genes, candidate_sets, "Meta_FinnGen_Bradley_Age65", "APOE_excluded"),
+  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_included"),
+  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_excluded")
+), fill = TRUE)
+if (nrow(candidate_results) > 0) {
+  fwrite(candidate_results, file.path(TAB_DIR, "Table_09_candidate_pathway_gene_set_support_by_MAGMA_rank.tsv"), sep = "\t")
+  candidate_wide <- dcast(
+    candidate_results[status == "tested"],
+    set_name + analysis ~ dataset,
+    value.var = c("mean_z", "wilcox_p", "wilcox_fdr")
+  )
+  fwrite(candidate_wide, file.path(TAB_DIR, "Table_09_candidate_pathway_gene_set_support_wide.tsv"), sep = "\t")
+}
+
+# ------------------------------------------------------------------------------
+# 6. Figures
+# ------------------------------------------------------------------------------
+
+plot_top_meta_snps(meta)
+if (nrow(candidate_results) > 0) plot_candidate_heatmap(candidate_results)
+
+# ------------------------------------------------------------------------------
+# 7. Run summary
+# ------------------------------------------------------------------------------
+
+summary_lines <- c(
+  "09. FinnGen EOAD + Bradley Age65 IVW meta-enhanced MAGMA analysis completed.",
+  paste0("Output directory: ", normalizePath(OUT_DIR, winslash = "/", mustWork = FALSE)),
+  "",
+  "Primary outputs:",
+  file.path(TAB_DIR, "FinnGen_Bradley_Age65_IVW_meta_full_summary_statistics.tsv"),
+  file.path(PRS_DIR, "FinnGen_Bradley_Age65_IVW_meta_PRS_weights.tsv"),
+  file.path(TAB_DIR, "Table_09_MAGMA_gene_level_overview.tsv"),
+  file.path(TAB_DIR, "Table_09_MAGMA_gene_set_overview.tsv"),
+  file.path(TAB_DIR, "Table_09_candidate_pathway_gene_set_support_by_MAGMA_rank.tsv"),
+  file.path(FIG_DIR, "Figure_09_meta_candidate_pathway_heatmap_APOE_excluded.png"),
+  "",
+  "Interpretation note:",
+  "This module is a meta-enhanced power analysis after independent replication.",
+  "It should not be described as a separate independent replication dataset."
+)
+writeLines(summary_lines, file.path(OUT_DIR, "README_09_IVW_meta_MAGMA.txt"))
+cat(paste(summary_lines, collapse = "\n"), "\n")
