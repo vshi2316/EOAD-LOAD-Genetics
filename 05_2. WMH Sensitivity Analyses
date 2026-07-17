@@ -1,5 +1,5 @@
 # ==============================================================================
-ADNI Scanner-Aware MRI / WMH Sensitivity Analyses
+# ADNI Scanner-Aware MRI / WMH Sensitivity Analyses
 # ==============================================================================
 
 suppressPackageStartupMessages({
