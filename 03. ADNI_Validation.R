@@ -1,9 +1,9 @@
 # ==============================================================================
-# ADNI Independent Cohort Validation of Pathway-Specific Genetic Risk
+# ADNI individual-level phenotype evaluation of pathway-specific polygenic scores
 # ==============================================================================
 #
-# Purpose: Validate age-dependent oligodendrocyte pathway genetic risk in
-#          Alzheimer's disease using the ADNI cohort
+# Purpose: Evaluate pathway-specific polygenic scores against imaging,
+#          biomarker, cognition, and progression phenotypes in ADNI.
 #
 # Analyses:
 #   1.  Data loading and cohort preparation (including CSF sTREM2)
@@ -1492,7 +1492,7 @@ run_adni_validation <- function(clinical_file, prs_file, mri_file, csf_file,
   fig_dir <- file.path(output_dir, "figures")
   dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
 
-  cat("=== ADNI Independent Cohort Validation ===\n\n")
+  cat("=== ADNI Individual-Level Phenotype Evaluation ===\n\n")
 
   # --- Step 1: Load and prepare data ---
   cat("[1/12] Loading and integrating data...\n")
