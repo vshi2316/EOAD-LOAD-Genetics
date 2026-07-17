@@ -1,5 +1,5 @@
 # ==============================================================================
-# 10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation
+# 10. GSE272082 Single-Nucleus Transcriptomic Contextualization
 # ==============================================================================
 rm(list = ls())
 options(stringsAsFactors = FALSE)
@@ -666,11 +666,11 @@ message_step("Step 7: Save processed object and analysis summary")
 saveRDS(seu, file.path(RDS_DIR, "GSE272082_original_framework_annotated_seurat.rds"))
 
 summary_lines <- c(
-  "GSE272082 orthogonal single-nucleus transcriptomic validation",
+  "GSE272082 single-nucleus transcriptomic contextualization",
   paste0("Generated: ", Sys.time()),
   "",
   "Interpretation:",
-  "This analysis provides orthogonal transcriptomic contextualization, not independent EOAD genetic replication.",
+    "The analysis provides orthogonal transcriptomic context without constituting independent EOAD genetic replication.",
   "",
   "Inputs:",
   paste0("- DATA_DIR: ", DATA_DIR),
@@ -698,7 +698,7 @@ summary_lines <- c(
 writeLines(summary_lines, con = file.path(OUT_DIR, "analysis_summary.txt"))
 
 cat("\n==============================================================================\n")
-cat("GSE272082 orthogonal transcriptomic validation completed.\n")
+cat("GSE272082 transcriptomic contextualization completed.\n")
 cat("Output directory:\n", OUT_DIR, "\n", sep = "")
 cat("FDR-significant candidate pathway tests: ", nrow(gene_set_tests_significant), "\n", sep = "")
 cat("==============================================================================\n")
