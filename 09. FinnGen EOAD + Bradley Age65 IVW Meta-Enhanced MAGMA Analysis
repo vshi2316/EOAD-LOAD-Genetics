@@ -1,6 +1,8 @@
 # ==============================================================================
 # 09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis
 # ==============================================================================
+# Combined analysis increases power after external evaluation and serves as
+# meta-enhanced integration rather than a second independent replication dataset.
 
 rm(list = ls())
 options(stringsAsFactors = FALSE)
@@ -48,9 +50,9 @@ CURRENT_EOAD_GENES <- Sys.getenv(
   "FINNGEN_EOAD_MAGMA_GENES",
   unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.genes.out.txt")
 )
-CURRENT_LOAD_GENES <- Sys.getenv(
-  "LOAD_MAGMA_GENES",
-  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.genes.out.txt")
+CURRENT_EADB_GENES <- Sys.getenv(
+  "EADB_MAGMA_GENES",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EADB", "EADB.genes.out.txt")
 )
 BRADLEY_AGE65_GENES <- Sys.getenv(
   "BRADLEY_AGE65_MAGMA_GENES",
@@ -60,9 +62,9 @@ CURRENT_EOAD_GSA <- Sys.getenv(
   "FINNGEN_EOAD_MAGMA_GSA",
   unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.gsa.out.txt")
 )
-CURRENT_LOAD_GSA <- Sys.getenv(
-  "LOAD_MAGMA_GSA",
-  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.gsa.out.txt")
+CURRENT_EADB_GSA <- Sys.getenv(
+  "EADB_MAGMA_GSA",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EADB", "EADB.gsa.out.txt")
 )
 BRADLEY_AGE65_GSA <- Sys.getenv(
   "BRADLEY_AGE65_MAGMA_GSA",
@@ -70,7 +72,7 @@ BRADLEY_AGE65_GSA <- Sys.getenv(
 )
 CANDIDATE_GENESET_FILE <- Sys.getenv(
   "CANDIDATE_GENESET_FILE",
-  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_load_candidate_gene_sets.tsv")
+  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_eadb_candidate_gene_sets.tsv")
 )
 
 MAGMA_EXE <- Sys.getenv("MAGMA_EXE", unset = "magma")
@@ -487,11 +489,11 @@ fwrite(magma_outputs, file.path(TAB_DIR, "Table_09_MAGMA_output_files.tsv"), sep
 # ------------------------------------------------------------------------------
 
 current_eoad_genes <- read_magma_genes(CURRENT_EOAD_GENES, "FinnGen_EOAD")
-current_load_genes <- read_magma_genes(CURRENT_LOAD_GENES, "LOAD")
+current_eadb_genes <- read_magma_genes(CURRENT_EADB_GENES, "EADB")
 bradley65_genes <- read_magma_genes(BRADLEY_AGE65_GENES, "Bradley_NHW_Age65")
 meta_genes <- read_magma_genes(magma_outputs$genes_out[1], "Meta_FinnGen_Bradley_Age65")
 
-gene_overview <- rbindlist(lapply(list(current_eoad_genes, bradley65_genes, meta_genes, current_load_genes), function(x) {
+gene_overview <- rbindlist(lapply(list(current_eoad_genes, bradley65_genes, meta_genes, current_eadb_genes), function(x) {
   data.table(
     dataset = x$dataset[1],
     n_genes = nrow(x),
@@ -505,8 +507,8 @@ fwrite(gene_overview, file.path(TAB_DIR, "Table_09_MAGMA_gene_level_overview.tsv
 current_eoad_gsa <- read_magma_gsa(CURRENT_EOAD_GSA, "FinnGen_EOAD")
 bradley65_gsa <- read_magma_gsa(BRADLEY_AGE65_GSA, "Bradley_NHW_Age65")
 meta_gsa <- read_magma_gsa(magma_outputs$gsa_out[1], "Meta_FinnGen_Bradley_Age65")
-current_load_gsa <- read_magma_gsa(CURRENT_LOAD_GSA, "LOAD")
-gsa_summary <- gsa_overview(current_eoad_gsa, bradley65_gsa, meta_gsa, current_load_gsa)
+current_eadb_gsa <- read_magma_gsa(CURRENT_EADB_GSA, "EADB")
+gsa_summary <- gsa_overview(current_eoad_gsa, bradley65_gsa, meta_gsa, current_eadb_gsa)
 if (nrow(gsa_summary) > 0) fwrite(gsa_summary, file.path(TAB_DIR, "Table_09_MAGMA_gene_set_overview.tsv"), sep = "\t")
 
 candidate_sets <- read_candidate_gene_sets(CANDIDATE_GENESET_FILE)
@@ -517,8 +519,8 @@ candidate_results <- rbindlist(list(
   candidate_rank_test(bradley65_genes, candidate_sets, "Bradley_NHW_Age65", "APOE_excluded"),
   candidate_rank_test(meta_genes, candidate_sets, "Meta_FinnGen_Bradley_Age65", "APOE_included"),
   candidate_rank_test(meta_genes, candidate_sets, "Meta_FinnGen_Bradley_Age65", "APOE_excluded"),
-  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_included"),
-  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_excluded")
+  candidate_rank_test(current_eadb_genes, candidate_sets, "EADB", "APOE_included"),
+  candidate_rank_test(current_eadb_genes, candidate_sets, "EADB", "APOE_excluded")
 ), fill = TRUE)
 if (nrow(candidate_results) > 0) {
   fwrite(candidate_results, file.path(TAB_DIR, "Table_09_candidate_pathway_gene_set_support_by_MAGMA_rank.tsv"), sep = "\t")
@@ -554,8 +556,8 @@ summary_lines <- c(
   file.path(FIG_DIR, "Figure_09_meta_candidate_pathway_heatmap_APOE_excluded.png"),
   "",
   "Interpretation note:",
-  "This module is a meta-enhanced power analysis after independent replication.",
-  "It should not be described as a separate independent replication dataset."
+    "The module provides meta-enhanced power analysis after independent replication.",
+    "Its results represent combined evidence rather than a separate independent replication dataset."
 )
 writeLines(summary_lines, file.path(OUT_DIR, "README_09_IVW_meta_MAGMA.txt"))
 cat(paste(summary_lines, collapse = "\n"), "\n")
