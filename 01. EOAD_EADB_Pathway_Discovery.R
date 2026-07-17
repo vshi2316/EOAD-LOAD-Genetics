@@ -1,11 +1,11 @@
 # ==============================================================================
-# EOAD vs LOAD: Data-Driven Pathway Discovery and Cell Type Specificity
+# EOAD pathway discovery against the broader EADB AD/ADRD reference architecture
 # ==============================================================================
 #
-# Purpose: Identify divergent biological pathways between early-onset (EOAD)
-#          and late-onset (LOAD) Alzheimer's disease using MAGMA gene-based
-#          association, curated module enrichment, GSEA, gene-property
-#          analysis, conditional regression, and downsampling validation.
+# Purpose: Compare focused FinnGen EOAD signals with the broader EADB AD/ADRD
+#          reference architecture using MAGMA gene-based association, curated
+#          module enrichment, GSEA, gene-property analysis, conditional
+#          regression, and effective-sample-size attenuation.
 #
 # Analyses:
 #   1. MAGMA gene-based association (read pre-computed .genes.out)
@@ -13,14 +13,14 @@
 #   3. Gene set enrichment analysis (GSEA GO-BP, ranked by MAGMA Z-stats)
 #   4. MAGMA gene-property analysis (9 cell type marker sets, linear model)
 #   5. Conditional regression (T cell independence from microglia)
-#   6. LOAD downsampling validation (deterministic SE scaling)
+#   6. EADB effective-sample-size attenuation (deterministic SE scaling)
 #   7. Publication-quality visualization
 #
 # Statistical notes:
 #   - ZSTAT = qnorm(1 - P/2) with sign correction for P > 0.5
 #   - Gene-property model: Z_MAGMA ~ beta_0 + beta_1 * CellType
 #   - Conditional model: Z_MAGMA ~ Target + Microglia_Covariate
-#   - Downsampling: SE_new = SE_old / sqrt(N_eff_EOAD / N_eff_LOAD)
+#   - EADB attenuation: SE_new = SE_old / sqrt(N_eff_EOAD / N_eff_EADB)
 #   - GSEA parameters: minGSSize=10, maxGSSize=500, pvalueCutoff=0.25
 #   - Multiple testing: Bonferroni for MAGMA genes, BH-FDR for modules/GSEA
 #
@@ -44,6 +44,16 @@ suppressPackageStartupMessages({
   library(cowplot)
   library(scales)
 })
+
+trait_display <- c(
+  EOAD = "FinnGen EOAD",
+  EADB = "EADB AD/ADRD comparator",
+  Aging = "Multivariate aging"
+)
+
+display_trait <- function(x) {
+  dplyr::recode(as.character(x), !!!trait_display, .default = as.character(x))
+}
 
 
 # ==============================================================================
@@ -166,13 +176,13 @@ test_module_enrichment <- function(magma_results, module_genes, module_name,
   )
 }
 
-run_graham_enrichment <- function(eoad_magma, load_magma) {
+run_graham_enrichment <- function(eoad_magma, eadb_magma) {
   graham_modules <- get_graham_modules()
   results <- data.frame()
 
   for (mod_name in names(graham_modules)) {
-    for (gwas_name in c("EOAD", "LOAD")) {
-      magma_df <- if (gwas_name == "EOAD") eoad_magma else load_magma
+    for (gwas_name in c("EOAD", "EADB")) {
+      magma_df <- if (gwas_name == "EOAD") eoad_magma else eadb_magma
       res <- test_module_enrichment(magma_df, graham_modules[[mod_name]], mod_name)
       res$GWAS <- gwas_name
       results <- rbind(results, res)
@@ -183,7 +193,7 @@ run_graham_enrichment <- function(eoad_magma, load_magma) {
   results$Significant <- results$FDR < 0.05
 
   cat("\nGraham Module Enrichment:\n")
-  for (g in c("EOAD", "LOAD")) {
+  for (g in c("EOAD", "EADB")) {
     cat(sprintf("  %s:\n", g))
     sub <- results[results$GWAS == g, ]
     for (i in seq_len(nrow(sub))) {
@@ -360,12 +370,12 @@ run_gene_property <- function(magma_df, markers, ct_name) {
   )
 }
 
-run_gene_property_analysis <- function(eoad_magma, load_magma) {
+run_gene_property_analysis <- function(eoad_magma, eadb_magma) {
   cell_type_markers <- get_cell_type_markers()
   results <- data.frame()
 
-  for (gwas_name in c("EOAD", "LOAD")) {
-    magma_df <- if (gwas_name == "EOAD") eoad_magma else load_magma
+  for (gwas_name in c("EOAD", "EADB")) {
+    magma_df <- if (gwas_name == "EOAD") eoad_magma else eadb_magma
     for (ct in names(cell_type_markers)) {
       res <- run_gene_property(magma_df, cell_type_markers[[ct]], ct)
       if (!is.null(res)) {
@@ -379,7 +389,7 @@ run_gene_property_analysis <- function(eoad_magma, load_magma) {
   results$FDR <- p.adjust(results$P, method = "BH")
 
   cat("\nGene-Property Analysis:\n")
-  for (g in c("EOAD", "LOAD")) {
+  for (g in c("EOAD", "EADB")) {
     cat(sprintf("  %s:\n", g))
     sub <- results[results$GWAS == g, ]
     sub <- sub[order(sub$P), ]
@@ -431,7 +441,7 @@ run_conditional_regression <- function(magma_df, target_genes, target_name,
   )
 }
 
-run_conditional_regression_all <- function(eoad_magma, load_magma) {
+run_conditional_regression_all <- function(eoad_magma, eadb_magma) {
   cell_type_markers <- get_cell_type_markers()
 
   microglia_covariate <- unique(toupper(c(
@@ -443,8 +453,8 @@ run_conditional_regression_all <- function(eoad_magma, load_magma) {
                          "TCR_Signaling", "NK_Cell")
 
   results <- data.frame()
-  for (gwas_name in c("EOAD", "LOAD")) {
-    magma_df <- if (gwas_name == "EOAD") eoad_magma else load_magma
+  for (gwas_name in c("EOAD", "EADB")) {
+    magma_df <- if (gwas_name == "EOAD") eoad_magma else eadb_magma
     for (ct in immune_cell_types) {
       res <- run_conditional_regression(magma_df, cell_type_markers[[ct]],
                                         ct, microglia_covariate)
@@ -456,7 +466,7 @@ run_conditional_regression_all <- function(eoad_magma, load_magma) {
   }
 
   cat("\nConditional Regression (controlling for microglia):\n")
-  for (g in c("EOAD", "LOAD")) {
+  for (g in c("EOAD", "EADB")) {
     cat(sprintf("  %s:\n", g))
     sub <- results[results$GWAS == g, ]
     for (i in seq_len(nrow(sub))) {
@@ -470,12 +480,12 @@ run_conditional_regression_all <- function(eoad_magma, load_magma) {
 
 
 # ==============================================================================
-# 6. LOAD Downsampling Validation (Deterministic SE Scaling)
+# 6. EADB Effective-Sample-Size Attenuation (Deterministic SE Scaling)
 # ==============================================================================
-# Downsample LOAD GWAS to match EOAD effective sample size.
-# SE_new = SE_old / sqrt(N_eff_EOAD / N_eff_LOAD).
-# This is a closed-form transformation with no stochastic component,
-# producing a single canonical downsampled dataset.
+# Retain EADB beta estimates and inflate standard errors to the FinnGen EOAD
+# effective sample size. The procedure provides a deterministic
+# power-sensitivity analysis without individual-level downsampling. Internal EADB object and file names are
+# retained for compatibility with established downstream workflows.
 # ==============================================================================
 
 downsample_gwas <- function(gwas_df, scale_factor) {
@@ -487,30 +497,30 @@ downsample_gwas <- function(gwas_df, scale_factor) {
   return(ds)
 }
 
-run_downsampling_validation <- function(load_gwas_file,
+run_downsampling_validation <- function(eadb_gwas_file,
                                         eoad_n_case = 1573,
                                         eoad_n_ctrl = 199505,
                                         ds_magma_file = NULL,
                                         output_dir = "results") {
 
-  load_gwas <- fread(load_gwas_file)
+  eadb_gwas <- fread(eadb_gwas_file)
 
   N_eff_EOAD <- 4 / (1 / eoad_n_case + 1 / eoad_n_ctrl)
-  N_case_LOAD <- load_gwas$n_cases[1]
-  N_ctrl_LOAD <- load_gwas$n_controls[1]
-  N_eff_LOAD  <- 4 / (1 / N_case_LOAD + 1 / N_ctrl_LOAD)
+  N_case_EADB <- eadb_gwas$n_cases[1]
+  N_ctrl_EADB <- eadb_gwas$n_controls[1]
+  N_eff_EADB  <- 4 / (1 / N_case_EADB + 1 / N_ctrl_EADB)
 
-  scaling_factor <- sqrt(N_eff_EOAD / N_eff_LOAD)
+  scaling_factor <- sqrt(N_eff_EOAD / N_eff_EADB)
 
-  cat(sprintf("Downsampling: LOAD N_eff=%.0f -> EOAD N_eff=%.0f (scale=%.4f)\n",
-              N_eff_LOAD, N_eff_EOAD, scaling_factor))
+  cat(sprintf("EADB attenuation: EADB N_eff=%.0f -> FinnGen EOAD N_eff=%.0f (scale=%.4f)\n",
+              N_eff_EADB, N_eff_EOAD, scaling_factor))
 
-  ds <- downsample_gwas(load_gwas, scaling_factor)
+  ds <- downsample_gwas(eadb_gwas, scaling_factor)
 
   ds_dir <- file.path(output_dir, "downsampling")
   dir.create(ds_dir, showWarnings = FALSE, recursive = TRUE)
   ds_snp <- ds[, .(SNP = variant_id, P = pval_ds)]
-  fwrite(ds_snp, file.path(ds_dir, "LOAD_downsampled_snps.txt"), sep = "\t")
+  fwrite(ds_snp, file.path(ds_dir, "EADB_downsampled_snps.txt"), sep = "\t")
   cat("  Downsampled SNP-level data written.\n")
 
   # If pre-computed MAGMA results on downsampled data are available
@@ -583,7 +593,10 @@ plot_graham_enrichment <- function(graham_results, output_dir = "results") {
     geom_hline(yintercept = -log10(0.05), linetype = "dashed",
                color = "gray50") +
     coord_flip() +
-    scale_fill_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5")) +
+    scale_fill_manual(
+      values = c("EOAD" = "#E64B35", "EADB" = "#4DBBD5"),
+      labels = trait_display[c("EOAD", "EADB")]
+    ) +
     labs(x = NULL, y = expression(-log[10](FDR)),
          title = "Graham Module Enrichment") +
     theme_publication +
@@ -595,8 +608,8 @@ plot_graham_enrichment <- function(graham_results, output_dir = "results") {
 }
 
 # --- 7B: GSEA NES Comparison Dot Plot ---
-plot_gsea_nes <- function(eoad_gsea, load_gsea, output_dir = "results") {
-  if (is.null(eoad_gsea) || is.null(load_gsea)) return(NULL)
+plot_gsea_nes <- function(eoad_gsea, eadb_gsea, output_dir = "results") {
+  if (is.null(eoad_gsea) || is.null(eadb_gsea)) return(NULL)
 
   fig_dir <- file.path(output_dir, "figures")
   dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
@@ -604,11 +617,11 @@ plot_gsea_nes <- function(eoad_gsea, load_gsea, output_dir = "results") {
   eoad_top <- eoad_gsea$table %>%
     filter(p.adjust < 0.05) %>% arrange(p.adjust) %>% head(20) %>%
     mutate(GWAS = "EOAD")
-  load_top <- load_gsea$table %>%
+  eadb_top <- eadb_gsea$table %>%
     filter(p.adjust < 0.05) %>% arrange(p.adjust) %>% head(20) %>%
-    mutate(GWAS = "LOAD")
+    mutate(GWAS = "EADB")
 
-  plot_data <- bind_rows(eoad_top, load_top) %>%
+  plot_data <- bind_rows(eoad_top, eadb_top) %>%
     mutate(Description = ifelse(nchar(Description) > 50,
                                 paste0(substr(Description, 1, 47), "..."),
                                 Description))
@@ -616,7 +629,10 @@ plot_gsea_nes <- function(eoad_gsea, load_gsea, output_dir = "results") {
   p <- ggplot(plot_data, aes(x = NES, y = reorder(Description, NES),
                               color = GWAS, size = -log10(p.adjust))) +
     geom_point(alpha = 0.8) +
-    scale_color_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5")) +
+    scale_color_manual(
+      values = c("EOAD" = "#E64B35", "EADB" = "#4DBBD5"),
+      labels = trait_display[c("EOAD", "EADB")]
+    ) +
     scale_size_continuous(range = c(2, 6),
                           name = expression(-log[10](FDR))) +
     labs(x = "Normalized Enrichment Score (NES)", y = NULL,
@@ -645,6 +661,9 @@ plot_gene_property_heatmap <- function(gene_property_results,
     select(CellType, GWAS, Beta) %>%
     pivot_wider(names_from = GWAS, values_from = Beta) %>%
     tibble::column_to_rownames("CellType")
+
+  colnames(gp_matrix) <- display_trait(colnames(gp_matrix))
+  colnames(gp_beta) <- display_trait(colnames(gp_beta))
 
   col_fun <- colorRamp2(
     c(0, -log10(0.005), max(as.matrix(gp_matrix), na.rm = TRUE)),
@@ -694,7 +713,10 @@ plot_conditional_forest <- function(conditional_results,
                    height = 0.2,
                    position = position_dodge(width = 0.5)) +
     geom_point(size = 3, position = position_dodge(width = 0.5)) +
-    scale_color_manual(values = c("EOAD" = "#E64B35", "LOAD" = "#4DBBD5")) +
+    scale_color_manual(
+      values = c("EOAD" = "#E64B35", "EADB" = "#4DBBD5"),
+      labels = trait_display[c("EOAD", "EADB")]
+    ) +
     labs(x = expression(beta ~ "(conditional on microglia)"), y = NULL,
          title = "Conditional Regression: T Cell Independence") +
     theme_publication +
@@ -705,18 +727,22 @@ plot_conditional_forest <- function(conditional_results,
   return(p)
 }
 
-# --- 7E: Downsampling Validation Bar Plot ---
-plot_downsampling <- function(eoad_gsea, load_gsea, ds_n_gsea,
+# --- 7E: EADB Effective-Sample-Size Attenuation Bar Plot ---
+plot_downsampling <- function(eoad_gsea, eadb_gsea, ds_n_gsea,
                               output_dir = "results") {
   fig_dir <- file.path(output_dir, "figures")
   dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
 
   n_eoad <- if (!is.null(eoad_gsea)) sum(eoad_gsea$table$p.adjust < 0.05) else 0
-  n_load <- if (!is.null(load_gsea)) sum(load_gsea$table$p.adjust < 0.05) else 0
+  n_eadb <- if (!is.null(eadb_gsea)) sum(eadb_gsea$table$p.adjust < 0.05) else 0
 
   bar_data <- data.frame(
-    Group      = c("EOAD\n(full)", "LOAD\n(full)", "LOAD\n(downsampled)"),
-    N_Pathways = c(n_eoad, n_load, ds_n_gsea),
+    Group      = c(
+      "FinnGen EOAD\n(full)",
+      "EADB comparator\n(full)",
+      "EADB comparator\n(attenuated)"
+    ),
+    N_Pathways = c(n_eoad, n_eadb, ds_n_gsea),
     SD         = c(0, 0, 0)
   )
   bar_data$Group <- factor(bar_data$Group, levels = bar_data$Group)
@@ -727,7 +753,7 @@ plot_downsampling <- function(eoad_gsea, load_gsea, ds_n_gsea,
                   width = 0.2) +
     scale_fill_manual(values = c("#E64B35", "#4DBBD5", "#91D1C2")) +
     labs(x = NULL, y = "Significant GO-BP Pathways (FDR < 0.05)",
-         title = "LOAD Downsampling Validation") +
+         title = "EADB Effective-Sample-Size Attenuation") +
     theme_publication +
     theme(legend.position = "none")
 
@@ -758,8 +784,8 @@ plot_combined_figure <- function(panels, output_dir = "results") {
 # ==============================================================================
 
 run_pathway_discovery <- function(eoad_magma_file,
-                                   load_magma_file,
-                                   load_gwas_file    = NULL,
+                                   eadb_magma_file,
+                                   eadb_gwas_file    = NULL,
                                    ds_magma_file     = NULL,
                                    eoad_n_case       = 1573,
                                    eoad_n_ctrl       = 199505,
@@ -773,79 +799,79 @@ run_pathway_discovery <- function(eoad_magma_file,
   # --- Part 1: Read MAGMA results ---
   cat("=== Part 1: MAGMA Gene-Based Association ===\n")
   eoad_magma <- read_magma_results(eoad_magma_file)
-  load_magma <- read_magma_results(load_magma_file)
+  eadb_magma <- read_magma_results(eadb_magma_file)
 
   cat(sprintf("EOAD: %d genes, %d Bonferroni-significant\n",
               nrow(eoad_magma), sum(eoad_magma$Bonferroni < 0.05)))
-  cat(sprintf("LOAD: %d genes, %d Bonferroni-significant\n",
-              nrow(load_magma), sum(load_magma$Bonferroni < 0.05)))
+  cat(sprintf("EADB AD/ADRD comparator: %d genes, %d Bonferroni-significant\n",
+              nrow(eadb_magma), sum(eadb_magma$Bonferroni < 0.05)))
 
   fwrite(eoad_magma[eoad_magma$Bonferroni < 0.05, ],
          file.path(output_dir, "tables", "EOAD_Significant_Genes.csv"))
-  fwrite(load_magma[load_magma$Bonferroni < 0.05, ],
-         file.path(output_dir, "tables", "LOAD_Significant_Genes.csv"))
+  fwrite(eadb_magma[eadb_magma$Bonferroni < 0.05, ],
+         file.path(output_dir, "tables", "EADB_Significant_Genes.csv"))
 
   # --- Part 2: Graham module enrichment ---
   cat("\n=== Part 2: Graham Module Enrichment ===\n")
-  graham_results <- run_graham_enrichment(eoad_magma, load_magma)
+  graham_results <- run_graham_enrichment(eoad_magma, eadb_magma)
   fwrite(graham_results,
          file.path(output_dir, "tables", "Graham_Module_Enrichment.csv"))
 
   # --- Part 3: GSEA GO-BP ---
   cat("\n=== Part 3: GSEA GO-BP ===\n")
   eoad_gsea <- run_gsea_gobp(eoad_magma, "EOAD")
-  load_gsea <- run_gsea_gobp(load_magma, "LOAD")
+  eadb_gsea <- run_gsea_gobp(eadb_magma, "EADB")
 
   if (!is.null(eoad_gsea))
     fwrite(eoad_gsea$table,
            file.path(output_dir, "tables", "EOAD_GSEA_GOBP.csv"))
-  if (!is.null(load_gsea))
-    fwrite(load_gsea$table,
-           file.path(output_dir, "tables", "LOAD_GSEA_GOBP.csv"))
+  if (!is.null(eadb_gsea))
+    fwrite(eadb_gsea$table,
+           file.path(output_dir, "tables", "EADB_GSEA_GOBP.csv"))
 
-  if (!is.null(eoad_gsea) && !is.null(load_gsea)) {
+  if (!is.null(eoad_gsea) && !is.null(eadb_gsea)) {
     eoad_sig <- eoad_gsea$table$ID[eoad_gsea$table$p.adjust < 0.05]
-    load_sig <- load_gsea$table$ID[load_gsea$table$p.adjust < 0.05]
-    cat(sprintf("  Overlap: %d pathways shared (EOAD %d, LOAD %d)\n",
-                length(intersect(eoad_sig, load_sig)),
-                length(eoad_sig), length(load_sig)))
+    eadb_sig <- eadb_gsea$table$ID[eadb_gsea$table$p.adjust < 0.05]
+    cat(sprintf("  Overlap: %d pathways shared (FinnGen EOAD %d, EADB comparator %d)\n",
+                length(intersect(eoad_sig, eadb_sig)),
+                length(eoad_sig), length(eadb_sig)))
   }
 
   # --- Part 4: Gene-property analysis ---
   cat("\n=== Part 4: Gene-Property Analysis ===\n")
-  gp_results <- run_gene_property_analysis(eoad_magma, load_magma)
+  gp_results <- run_gene_property_analysis(eoad_magma, eadb_magma)
   fwrite(gp_results,
          file.path(output_dir, "tables", "Gene_Property_CellType.csv"))
 
   # --- Part 5: Conditional regression ---
   cat("\n=== Part 5: Conditional Regression ===\n")
-  cond_results <- run_conditional_regression_all(eoad_magma, load_magma)
+  cond_results <- run_conditional_regression_all(eoad_magma, eadb_magma)
   fwrite(cond_results,
          file.path(output_dir, "tables", "Conditional_Regression.csv"))
 
-  # --- Part 6: Downsampling validation ---
+  # --- Part 6: EADB effective-sample-size attenuation ---
   ds_result <- NULL
-  if (!is.null(load_gwas_file)) {
-    cat("\n=== Part 6: Downsampling Validation ===\n")
+  if (!is.null(eadb_gwas_file)) {
+    cat("\n=== Part 6: EADB Effective-Sample-Size Attenuation ===\n")
     ds_result <- run_downsampling_validation(
-      load_gwas_file, eoad_n_case, eoad_n_ctrl, ds_magma_file, output_dir
+      eadb_gwas_file, eoad_n_case, eoad_n_ctrl, ds_magma_file, output_dir
     )
   }
 
   # --- Part 7: Visualization ---
   cat("\n=== Part 7: Visualization ===\n")
   p_graham <- plot_graham_enrichment(graham_results, output_dir)
-  p_gsea   <- plot_gsea_nes(eoad_gsea, load_gsea, output_dir)
+  p_gsea   <- plot_gsea_nes(eoad_gsea, eadb_gsea, output_dir)
   plot_gene_property_heatmap(gp_results, output_dir)
   p_cond   <- plot_conditional_forest(cond_results, output_dir)
 
   p_ds <- NULL
   if (!is.null(ds_result) && nrow(ds_result$summary) > 0) {
-    p_ds <- plot_downsampling(eoad_gsea, load_gsea,
+    p_ds <- plot_downsampling(eoad_gsea, eadb_gsea,
                               ds_result$summary$N_GSEA_Sig, output_dir)
   }
 
-  # Heatmap placeholder for combined figure (generated as separate PDF)
+# Heatmap panel for the combined figure (generated as a separate PDF)
   panels <- list(p_graham, p_gsea, ggplot() + theme_void(), p_cond, p_ds)
   plot_combined_figure(panels, output_dir)
 
@@ -857,10 +883,10 @@ run_pathway_discovery <- function(eoad_magma_file,
 
   invisible(list(
     eoad_magma       = eoad_magma,
-    load_magma       = load_magma,
+    eadb_magma       = eadb_magma,
     graham_results   = graham_results,
     eoad_gsea        = eoad_gsea,
-    load_gsea        = load_gsea,
+    eadb_gsea        = eadb_gsea,
     gene_property    = gp_results,
     conditional      = cond_results,
     downsampling     = ds_result
@@ -873,9 +899,9 @@ run_pathway_discovery <- function(eoad_magma_file,
 # ==============================================================================
 # results <- run_pathway_discovery(
 #   eoad_magma_file = "data/EOAD_MAGMA.genes.out",
-#   load_magma_file = "data/LOAD_MAGMA.genes.out",
-#   load_gwas_file  = "data/LOAD_GWAS_summary_stats.tsv.gz",
-#   ds_magma_file   = "results/downsampling/LOAD_downsampled.genes.out",
+#   eadb_magma_file = "data/EADB_MAGMA.genes.out",
+#   eadb_gwas_file  = "data/EADB_GWAS_summary_stats.tsv.gz",
+#   ds_magma_file   = "results/downsampling/EADB_downsampled.genes.out",
 #   eoad_n_case     = 1573,
 #   eoad_n_ctrl     = 199505,
 #   output_dir      = "results"
