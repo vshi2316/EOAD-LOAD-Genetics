@@ -1,22 +1,21 @@
 # ==============================================================================
-# EOAD vs LOAD: Concordance and Phenotype-Level Contextualization Framework
+# Concordance and phenotype-level contextualization framework
 # ==============================================================================
 #
-# Purpose: Reframe the late-stage EOAD/LOAD analyses for an Alzheimer's &
-#          Dementia-style manuscript by separating:
-#            1. unbiased pathway discovery in the current GWAS/MAGMA data,
+# Purpose: Separate the analytical roles of:
+#            1. FinnGen EOAD discovery against the EADB AD/ADRD reference,
 #            2. cross-method concordance with published EOAD genetic evidence,
 #            3. phenotype-level contextualization in ADNI/HABS/A4/AIBL, and
 #            4. targeted negative sensitivity analyses for the 44-gene
 #               oligodendrocyte/myelin candidate set.
 #
-# This script intentionally avoids proprietary or locally wrapped packages. It
+# The implementation avoids proprietary or locally wrapped packages and
 # uses CRAN/base R only (data.table + stats) and can summarize outputs generated
 # by open-source tools such as MAGMA, clusterProfiler, coloc and SMR/HEIDI.
 #
 # Terminology guardrails:
-#   - "Discovery" is reserved for analyses generated from the current EOAD/LOAD
-#     GWAS, MAGMA and GSEA data.
+#   - "Discovery" is reserved for FinnGen EOAD analyses evaluated against the
+#     broader EADB AD/ADRD GWAS, MAGMA, and GSEA reference profile.
 #   - "Concordance" describes comparison with published EOAD evidence, including
 #     Bradley et al. 2025 gene sets, unless formal sample independence is proven.
 #   - "Phenotype-level contextualization" describes ADNI/HABS/A4/AIBL analyses.
@@ -147,11 +146,11 @@ make_default_config <- function(base_dir = find_project_base()) {
       "Supplementary_Tables",
       "Supplementary_Table_S1_EOAD_MAGMA_Complete.csv"
     ),
-    load_magma_file = file.path(
+    eadb_magma_file = file.path(
       base_dir,
       "Stage2_Results",
       "Supplementary_Tables",
-      "Supplementary_Table_S2_LOAD_MAGMA_Complete.csv"
+      "Supplementary_Table_S2_EADB_MAGMA_Complete.csv"
     ),
     gsea_dir = file.path(base_dir, "Stage2_Results", "NC_Tables"),
     gsea_file_template = "Table_%s_GSEA_%s.csv",
@@ -248,12 +247,12 @@ standardize_magma <- function(dt, trait) {
   out[]
 }
 
-load_magma_pair <- function(config) {
+read_magma_pair <- function(config) {
   eoad <- safe_fread(config$eoad_magma_file, "EOAD MAGMA", required = TRUE)
-  load <- safe_fread(config$load_magma_file, "LOAD MAGMA", required = TRUE)
+  eadb <- safe_fread(config$eadb_magma_file, "EADB MAGMA", required = TRUE)
   list(
     EOAD = standardize_magma(eoad, "EOAD"),
-    LOAD = standardize_magma(load, "LOAD")
+    EADB = standardize_magma(eadb, "EADB")
   )
 }
 
@@ -280,7 +279,7 @@ write_magma_overview <- function(magma, output_dir) {
 # 3. Unbiased GSEA Discovery Summary
 # ==============================================================================
 
-load_gsea_results <- function(config, traits = c("EOAD", "LOAD"),
+read_gsea_results <- function(config, traits = c("EOAD", "EADB"),
                               databases = c("GO_BP", "GO_MF", "KEGG")) {
   manifest <- CJ(trait = traits, database = databases)
   manifest[, file := file.path(
@@ -409,7 +408,7 @@ write_literature_template <- function(config) {
         gene = c("ADD_HGNC_SYMBOL", "ADD_HGNC_SYMBOL", "ADD_HGNC_SYMBOL"),
         notes = c(
           "Replace with curated genes from the published paper or supplement.",
-          "This file supports cross-method concordance, not subtype-specific replication.",
+          "The file supports cross-method concordance without constituting subtype-specific replication.",
           "Use direct HGNC symbols; one gene per row."
         )
       ),
@@ -819,14 +818,14 @@ write_language_notes <- function(output_dir) {
   notes <- c(
     "Recommended manuscript framing",
     "",
-    "The revised framework characterizes EOAD/LOAD heterogeneity through",
+    "The revised framework characterizes EOAD/EADB heterogeneity through",
     "unbiased pathway discovery, cross-method concordance with published EOAD",
     "genetic evidence, phenotype-level contextualization in external cohorts,",
     "and targeted negative sensitivity analyses for the 44-gene",
     "oligodendrocyte/myelin candidate set.",
     "",
     "Preferred terms:",
-    "- discovery: current EOAD/LOAD GWAS, MAGMA and GSEA outputs.",
+    "- discovery: current EOAD/EADB GWAS, MAGMA and GSEA outputs.",
     "- concordance: overlap or enrichment relative to published EOAD evidence.",
     "- phenotype-level contextualization: ADNI/HABS/A4/AIBL clinical and imaging results.",
     "- targeted sensitivity: 44-gene MAGMA, coloc and SMR/HEIDI analyses.",
@@ -837,8 +836,8 @@ write_language_notes <- function(output_dir) {
     "- causal oligodendrocyte/myelin claims from negative targeted sensitivity analyses.",
     "",
     "Conservative conclusion:",
-    "EOAD and LOAD show strong global genetic overlap with pathway-level",
-    "heterogeneity. LOAD shows broader immune and microglial enrichment, whereas",
+    "EOAD and EADB show strong global genetic overlap with pathway-level",
+    "heterogeneity. EADB shows broader immune and microglial enrichment, whereas",
     "EOAD shows a narrower architecture involving adhesion, amyloid-clearance,",
     "selected immune, lipid and white-matter-related signals. The targeted",
     "44-gene oligodendrocyte/myelin model remains exploratory and was not",
@@ -904,7 +903,7 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
   theme_message("Permutations per concordance test: %s", config$n_perm)
 
   magma <- tryCatch(
-    load_magma_pair(config),
+    read_magma_pair(config),
     error = function(e) {
       warning(conditionMessage(e), call. = FALSE)
       NULL
@@ -915,19 +914,19 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
     magma_overview <- write_status_table(
       file.path(config$output_dir, "Supplementary_Table_44_MAGMA_gene_level_overview_NOT_RUN.csv"),
       "not_run",
-      "EOAD and/or LOAD MAGMA input files were not available; MAGMA overview could not be generated."
+      "EOAD and/or EADB MAGMA input files were not available; MAGMA overview could not be generated."
     )
   } else {
     magma_overview <- write_magma_overview(magma, config$output_dir)
   }
 
-  gsea_all <- load_gsea_results(config)
+  gsea_all <- read_gsea_results(config)
   gsea_summary <- write_gsea_summary(gsea_all, config$output_dir)
 
   if (is.null(magma)) {
     concordance <- write_concordance_not_run_outputs(
       config$output_dir,
-      "EOAD/LOAD MAGMA inputs were unavailable; published gene-set concordance could not be evaluated."
+      "EOAD/EADB MAGMA inputs were unavailable; published gene-set concordance could not be evaluated."
     )
   } else {
     concordance <- run_published_gene_set_concordance(magma, config)
@@ -942,14 +941,14 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
   summary_file <- file.path(config$output_dir, "analysis_summary.txt")
   sink(summary_file)
   cat("=======================================================================\n")
-  cat("EOAD/LOAD concordance and phenotype-level contextualization framework\n")
+  cat("EOAD/EADB concordance and phenotype-level contextualization framework\n")
   cat("=======================================================================\n")
   cat("Date:", as.character(Sys.Date()), "\n")
   cat("Base directory:", config$base_dir, "\n")
   cat("Output directory:", config$output_dir, "\n")
   cat("Permutations per gene-set concordance test:", config$n_perm, "\n\n")
   cat("Core logic:\n")
-  cat("  1. Discovery uses current EOAD/LOAD GWAS, MAGMA and GSEA outputs.\n")
+  cat("  1. Discovery uses current EOAD/EADB GWAS, MAGMA and GSEA outputs.\n")
   cat("  2. Bradley 2025 comparisons are cross-method concordance analyses.\n")
   cat("  3. ADNI/HABS/A4/AIBL layers are phenotype-level contextualization.\n")
   cat("  4. Targeted 44-gene analyses are sensitivity tests, not causal proof.\n\n")
