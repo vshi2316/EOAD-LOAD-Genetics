@@ -1,6 +1,8 @@
 # ==============================================================================
 # 08. Bradley 2025 SNP_Locus-Level Replication
 # ==============================================================================
+# Directional tests use LD-independent non-APOE loci; the APOE LD block is
+# represented by one index variant rather than multiple correlated SNPs.
 options(stringsAsFactors = FALSE)
 set.seed(20260613)
 
@@ -41,7 +43,7 @@ BRADLEY_AGE70_INPUT <- Sys.getenv(
 )
 CANDIDATE_GENESET_FILE <- Sys.getenv(
   "CANDIDATE_GENESET_FILE",
-  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_load_candidate_gene_sets.tsv")
+  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_eadb_candidate_gene_sets.tsv")
 )
 GENE_LOC_FILE <- Sys.getenv(
   "MAGMA_GENE_LOC",
