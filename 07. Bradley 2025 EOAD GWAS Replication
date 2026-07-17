@@ -1,6 +1,9 @@
 # ==============================================================================
 # 07. Bradley 2025 EOAD GWAS Replication
 # ==============================================================================
+# Bradley/Pottier Age65 is the primary external EOAD dataset. Age70 is retained
+# as a sensitivity definition. The five tested pathways are frozen from FinnGen
+# EOAD discovery before evaluation in Bradley/Pottier.
 
 rm(list = ls())
 options(stringsAsFactors = FALSE)
@@ -60,21 +63,21 @@ CURRENT_EOAD_GENES <- Sys.getenv(
   "FINNGEN_EOAD_MAGMA_GENES",
   unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.genes.out.txt")
 )
-CURRENT_LOAD_GENES <- Sys.getenv(
-  "LOAD_MAGMA_GENES",
-  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.genes.out.txt")
+CURRENT_EADB_GENES <- Sys.getenv(
+  "EADB_MAGMA_GENES",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EADB", "EADB.genes.out.txt")
 )
 CURRENT_EOAD_GSA <- Sys.getenv(
   "FINNGEN_EOAD_MAGMA_GSA",
   unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EOAD", "EOAD.gsa.out.txt")
 )
-CURRENT_LOAD_GSA <- Sys.getenv(
-  "LOAD_MAGMA_GSA",
-  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_LOAD", "LOAD.gsa.out.txt")
+CURRENT_EADB_GSA <- Sys.getenv(
+  "EADB_MAGMA_GSA",
+  unset = file.path(RESULTS_DIR, "01_Pathway_Discovery", "MAGMA_EADB", "EADB.gsa.out.txt")
 )
 CANDIDATE_GENESET_FILE <- Sys.getenv(
   "CANDIDATE_GENESET_FILE",
-  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_load_candidate_gene_sets.tsv")
+  unset = file.path(DATA_DIR, "candidate_gene_sets", "eoad_eadb_candidate_gene_sets.tsv")
 )
 
 MAGMA_EXE <- Sys.getenv("MAGMA_EXE", unset = "magma")
@@ -562,9 +565,9 @@ message_step("Summarising MAGMA gene-level, gene-set, and candidate pathway repl
 bradley65_genes <- read_magma_genes(magma_outputs[dataset == "Bradley_NHW_Age65", genes_out][1], "Bradley_NHW_Age65")
 bradley70_genes <- read_magma_genes(magma_outputs[dataset == "Bradley_NHW_Age70", genes_out][1], "Bradley_NHW_Age70")
 current_eoad_genes <- read_magma_genes(CURRENT_EOAD_GENES, "FinnGen_EOAD")
-current_load_genes <- read_magma_genes(CURRENT_LOAD_GENES, "LOAD")
+current_eadb_genes <- read_magma_genes(CURRENT_EADB_GENES, "EADB")
 
-gene_overview <- rbindlist(lapply(list(current_eoad_genes, current_load_genes, bradley65_genes, bradley70_genes), function(x) {
+gene_overview <- rbindlist(lapply(list(current_eoad_genes, current_eadb_genes, bradley65_genes, bradley70_genes), function(x) {
   data.table(
     dataset = x$dataset[1],
     n_genes = nrow(x),
@@ -586,7 +589,7 @@ fwrite(gene_conc, file.path(TAB_DIR, "Table_07_Bradley_vs_FinnGen_EOAD_gene_leve
 bradley65_gsa <- read_magma_gsa(magma_outputs[dataset == "Bradley_NHW_Age65", gsa_out][1], "Bradley_NHW_Age65")
 bradley70_gsa <- read_magma_gsa(magma_outputs[dataset == "Bradley_NHW_Age70", gsa_out][1], "Bradley_NHW_Age70")
 current_eoad_gsa <- read_magma_gsa(CURRENT_EOAD_GSA, "FinnGen_EOAD")
-current_load_gsa <- read_magma_gsa(CURRENT_LOAD_GSA, "LOAD")
+current_eadb_gsa <- read_magma_gsa(CURRENT_EADB_GSA, "EADB")
 gsa_conc <- rbindlist(list(
   gsa_concordance(current_eoad_gsa, bradley65_gsa, "FinnGen_EOAD", "Bradley_NHW_Age65"),
   gsa_concordance(current_eoad_gsa, bradley70_gsa, "FinnGen_EOAD", "Bradley_NHW_Age70")
@@ -603,8 +606,8 @@ candidate_results <- rbindlist(list(
   candidate_rank_test(bradley65_genes, candidate_sets, "Bradley_NHW_Age65", "APOE_excluded"),
   candidate_rank_test(bradley70_genes, candidate_sets, "Bradley_NHW_Age70", "APOE_included"),
   candidate_rank_test(bradley70_genes, candidate_sets, "Bradley_NHW_Age70", "APOE_excluded"),
-  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_included"),
-  candidate_rank_test(current_load_genes, candidate_sets, "LOAD", "APOE_excluded")
+  candidate_rank_test(current_eadb_genes, candidate_sets, "EADB", "APOE_included"),
+  candidate_rank_test(current_eadb_genes, candidate_sets, "EADB", "APOE_excluded")
 ), fill = TRUE)
 if (nrow(candidate_results) > 0) {
   fwrite(candidate_results, file.path(TAB_DIR, "Table_07_candidate_pathway_replication_by_MAGMA_rank.tsv"), sep = "\t")
