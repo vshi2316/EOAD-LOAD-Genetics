@@ -1,9 +1,9 @@
 # ==============================================================================
-# Cross-Cohort Mechanistic Validation: A4, HABS, and AIBL
+# A4, HABS, and AIBL phenotype-level contextual analyses
 # ==============================================================================
 #
-# Purpose: Validate WMH-mediated neuroinflammatory mechanisms across three
-#          independent cohorts (A4, HABS, AIBL) for Alzheimer's disease
+# Purpose: Provide external phenotype context across A4, HABS, and AIBL using
+#          white matter, biomarker, cognition, and progression analyses.
 #
 # Analyses:
 #   1.  Data loading for A4, HABS, and AIBL cohorts
@@ -1636,7 +1636,7 @@ run_cross_cohort_validation <- function(
   cat("\n====== Session Info ======\n")
   print(sessionInfo())
 
-  cat("\n====== Cross-Cohort Validation Complete ======\n")
+  cat("\n====== External Phenotype Context Analyses Complete ======\n")
   return(results)
 }
 
