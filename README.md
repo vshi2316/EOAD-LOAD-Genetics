@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/30106346/README.md)
+[README.md](https://github.com/user-attachments/files/30442510/README.md)
 # Early-Onset Alzheimer's Disease Within the Broader AD/ADRD Genetic Architecture
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -27,6 +27,7 @@ The analytical roles remain distinct. Bradley/Pottier supplies independent EOAD 
 ## Repository Structure
 
 ```text
+00_preflight.R
 01. EOAD_EADB_Pathway_Discovery.R
 02. PRS_LDpred2_Analysis.R
 03. ADNI_Validation.R
@@ -38,6 +39,7 @@ The analytical roles remain distinct. Bradley/Pottier supplies independent EOAD 
 08. Bradley 2025 SNP_Locus-Level Replication.R
 09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis.R
 10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation.R
+config_template.R
 LICENSE
 README.md
 ```
@@ -86,23 +88,24 @@ NHW_Age70_sumstats_base_model_SNP-SEX-10PCs-Array.txt
 
 Local paths should be supplied through environment variables rather than hard-coded manuscript paths.
 
+Copy `config_template.R` to an untracked local file named `config.R`, edit the
+paths, and run the preflight before any analysis:
+
 ```r
-Sys.setenv(
-  EOAD_PROJECT_DIR = "H:/AD_project",
-  EOAD_DATA_DIR = "H:/AD_project/data",
-  EOAD_RESULTS_DIR = "H:/AD_project/results",
-  FINNGEN_EOAD_SUMSTATS = "H:/AD_project/data/GWAS/finngen_R11_AD_EO_EXMORE.gz",
-  EADB_ADRD_SUMSTATS = "H:/AD_project/data/GWAS/EADB_stage1_AD_ADRD.tsv.gz",
-  BRADLEY_RAW_DIR = "H:/AD_project/data/Bradley_Pottier_2025",
-  BRADLEY_BUILD = "hg38",
-  TARGET_MAGMA_BUILD = "hg19",
-  HG38_TO_HG19_CHAIN = "H:/AD_project/data/reference/hg38ToHg19.over.chain.gz",
-  MAGMA_EXE = "C:/tools/magma/magma.exe",
-  MAGMA_BFILE = "H:/AD_project/data/reference/magma/g1000_eur/g1000_eur",
-  MAGMA_GENE_LOC = "H:/AD_project/data/reference/magma/ENSGv110.coding.genes.txt",
-  MAGMA_SET_ANNOT = "H:/AD_project/data/reference/magma/MSigDB_20231Hs_MAGMA.txt"
-)
+source("config.R")
+source("00_preflight.R")
 ```
+
+The repository does not redistribute controlled-access participant data, GWAS
+summary statistics, MAGMA reference files, or S-PrediXcan models. A complete
+analysis run therefore requires authorized local copies of the inputs listed
+below. The preflight verifies package availability, required environment
+variables, input paths, and the MAGMA reference prefix.
+
+`config_template.R` derives standard data and results locations from
+`EOAD_PROJECT_DIR`. Edit the template only when a resource is stored elsewhere.
+The local `config.R` file is excluded from version control to prevent accidental
+publication of controlled-access paths.
 
 ## Software Dependencies
 
@@ -278,6 +281,12 @@ Module 10 reads filtered 10x expression matrices, reconstructs major cell classe
 The resulting signals provide region-resolved and cell-type-resolved transcriptomic context, with inference restricted to pathway expression patterns across the available donors.
 
 ## Recommended Run Order
+
+Modules 01 to 06 define reusable functions when sourced. Call the documented
+top-level function shown in each module's example block after sourcing the file.
+Modules 07 to 10 contain executable workflows and require the configured inputs
+and upstream outputs described below. A successful preflight confirms the local
+environment but does not replace cohort-specific access approval.
 
 ```r
 source("01. EOAD_EADB_Pathway_Discovery.R")
