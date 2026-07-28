@@ -117,7 +117,12 @@ write_status_table <- function(file, status, reason, ...) {
 # 1. Input Discovery and Configuration
 # ==============================================================================
 
-find_project_base <- function(start_dirs = c("H:/AD_*", "F:/AD_*", "data")) {
+find_project_base <- function(start_dirs = c(
+  Sys.getenv("EOAD_PROJECT_DIR", unset = ""),
+  getwd(),
+  file.path(getwd(), "data")
+)) {
+  start_dirs <- start_dirs[nzchar(start_dirs)]
   candidates <- unique(unlist(lapply(start_dirs, Sys.glob), use.names = FALSE))
   candidates <- candidates[file.exists(file.path(
     candidates,
@@ -978,11 +983,11 @@ run_revised_aandd_concordance_contextualization <- function(config = make_defaul
 # ==============================================================================
 # Uncomment and edit paths as needed:
 #
-# config <- make_default_config(base_dir = "H:/AD_project_directory")
+# config <- make_default_config(base_dir = Sys.getenv("EOAD_PROJECT_DIR"))
 # config$literature_gene_set_file <- "data/published_EOAD_gene_sets.csv"
 # config$phenotype_summary_file <- "data/phenotype_level_contextualization.csv"
 # results <- run_revised_aandd_concordance_contextualization(config)
 #
-# To run with automatically detected local paths:
+# To run from the configured project directory:
 # results <- run_revised_aandd_concordance_contextualization()
 # ==============================================================================
