@@ -1,37 +1,39 @@
-[README.md](https://github.com/user-attachments/files/30442510/README.md)
-# Early-Onset Alzheimer's Disease Within the Broader AD/ADRD Genetic Architecture
+[Uploading README.md…]()
+# Early-Onset Alzheimer Disease Within the Broader Alzheimer Disease Genetic Architecture
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
+## Scope
 
-The repository contains analysis code for a multi-layer study of early-onset Alzheimer's disease (EOAD) within the broader genetic architecture of Alzheimer's disease and related dementia (AD/ADRD). The European Alzheimer & Dementia Biobank (EADB) stage I meta-analysis supplies the broad AD/ADRD reference architecture. FinnGen Release 11 EOAD summary statistics identify focused genetic, pathway, spatial, and transcriptome-wide enrichment patterns against that reference.
+This repository contains the reproducible analysis code for a multi-layer study of early-onset Alzheimer disease (EOAD) within the broader Alzheimer disease and related dementia genetic architecture. The study uses FinnGen EOAD summary statistics as the focused discovery resource, the EADB stage I AD and ADRD meta-analysis as the broader reference architecture, and Bradley and Pottier multi-cohort EOAD summary statistics as an independent genetic evaluation.
 
-Independent EOAD genetic evaluation uses Bradley/Pottier 2025 multi-cohort summary statistics. Age65 is the primary external dataset, and Age70 is retained as a sensitivity definition. FinnGen EOAD and Bradley Age65 are subsequently combined through fixed-effect inverse-variance meta-analysis to increase gene-level and pathway-level resolution.
+The analysis proceeds from genetic discovery to independent replication, meta-enhanced prioritization, molecular and cellular context, and individual-level clinical expression. The clinical expression layer uses harmonized analyses across A4, ADNI and HABS-HD. AIBL is retained as a longitudinal conversion benchmark when the available integrated file does not contain quantitative pathology and WMH variables compatible with the shared model.
 
-Spatial transcriptomic resources, GTEx v8 transcriptome-wide association analyses, and GSE272082 single-nucleus RNA sequencing provide anatomical and cellular context. The Alzheimer's Disease Neuroimaging Initiative (ADNI) provides individual-level phenotype evaluation of pathway-specific polygenic risk scores across imaging, cerebrospinal fluid biomarkers, and clinical progression. A4, HABS, and AIBL extend the phenotype-level context.
+The repository contains code and configuration templates only. Controlled-access participant data, genotype files, imaging files, GWAS summary statistics, transcriptomic matrices and software binaries are not redistributed.
 
-## Evidence Framework
+## Evidence hierarchy
 
-The manuscript uses the following evidence hierarchy:
+The manuscript distinguishes the following evidence levels.
 
-1. **Broader reference architecture:** EADB AD/ADRD summary statistics define the large-sample reference profile.
-2. **Focused EOAD findings:** FinnGen EOAD identifies pathway, spatial, transcriptome-wide, and polygenic patterns within the shared architecture.
-3. **External EOAD genetic replication:** Bradley/Pottier Age65 evaluates prespecified FinnGen loci and pathways. Age70 supplies a broader sensitivity analysis.
-4. **Meta-enhanced integration:** FinnGen EOAD and Bradley Age65 meta-analysis increases statistical resolution after external evaluation.
-5. **Transcriptomic context:** gsMap, GTEx v8, and GSE272082 localize genetic findings across brain regions and cell types.
-6. **Individual-level phenotype evaluation:** ADNI evaluates pathway-specific scores against imaging, biomarker, and progression phenotypes. A4, HABS, and AIBL provide supporting phenotype-level analyses.
+1. The EADB AD and ADRD resource provides the broader genetic reference architecture.
+2. FinnGen EOAD supplies the focused discovery analysis.
+3. Bradley and Pottier Age65 supplies the primary independent EOAD summary-statistics evaluation. Age70 is a sensitivity definition.
+4. FinnGen EOAD and Bradley Age65 are combined in a fixed-effect inverse-variance meta-analysis after the external evaluation.
+5. Spatial transcriptomic, GTEx v8, and GSE272082 analyses provide molecular and cellular context.
+6. ADNI provides genotype-enabled phenotype evaluation of pathway-specific scores.
+7. A4, ADNI and HABS-HD provide harmonized pathology-to-cognition analyses across clinical settings. AIBL provides longitudinal clinical progression context.
 
-The analytical roles remain distinct. Bradley/Pottier supplies independent EOAD genetic replication. Meta-analysis increases power. GSE272082 supplies transcriptomic context. ADNI supplies genotype-enabled phenotype evaluation. A4, HABS, and AIBL extend the clinical context.
+These layers answer different questions. External EOAD data support genetic replication, meta-analysis improves statistical resolution, transcriptomic analyses localize candidate biology, and the clinical cohorts characterize how pathology relates to cognition across disease stages.
 
-## Repository Structure
+## Repository layout
 
 ```text
 00_preflight.R
 01. EOAD_EADB_Pathway_Discovery.R
 02. PRS_LDpred2_Analysis.R
 03. ADNI_Validation.R
-04. A4_HABS_AIBL_Validation.R
+04_1. A4_HABS-HD_AIBL_Validation.R
+04_2. Harmonized Clinical Expression Across Alzheimer Disease Stages.R
 05_1. EOAD Internal Robustness Analyses.R
 05_2. WMH Sensitivity Analyses.R
 06. Concordance and Phenotype-Level Contextualization Framework.R
@@ -44,70 +46,261 @@ LICENSE
 README.md
 ```
 
-All analysis scripts use the `.R` extension. Comparator identifiers, objects, environment variables, output names, and manuscript-facing labels use `EADB`, with `EADB AD/ADRD comparator` retained as the full scientific description.
+The numbered files define the manuscript-facing analytical order. Module `04_2` contains the complete harmonized clinical analysis in one script, including model construction, heterogeneity analysis, bounded sensitivity checks and Figure 6 generation.
 
-## Data Inputs
+## Manuscript-to-code correspondence
 
-Large genotype, GWAS, imaging, and transcriptomic files are not redistributed in this repository. Access remains subject to the terms of the original data providers.
+| Manuscript component | Code module | Main role |
+|---|---|---|
+| Shared EOAD and broader AD genetic architecture | `01` | FinnGen EOAD versus EADB pathway, gene-property and enrichment analyses |
+| Polygenic architecture and transcriptome-wide analysis | `02` | LDpred2 scores, APOE-region sensitivity and S-PrediXcan analyses |
+| ADNI pathway-score phenotype evaluation | `03` | Imaging, CSF, cognition and progression associations |
+| Cohort-specific phenotype context | `04_1` | Original A4, HABS and AIBL context analyses retained for supplementary reporting |
+| Harmonized clinical expression | `04_2` | Shared pathology-to-cognition model, WMH and age modifiers, stage heterogeneity and Figure 6 |
+| EOAD internal robustness | `05_1` | Leave-one-gene, APOE and MHC exclusion, detectable-effect and matched gene-set analyses |
+| Imaging sensitivity | `05_2` | Scanner, field-strength, manufacturer and acquisition sensitivity analyses |
+| Concordance and boundary diagnostics | `06` | Published gene-set concordance, phenotype boundaries and targeted candidate-gene diagnostics |
+| Independent EOAD summary-statistics replication | `07` | Bradley and Pottier Age65 primary analysis and Age70 sensitivity analysis |
+| SNP and locus replication | `08` | Allele harmonization, LD clumping, directional testing and rs56368748 evaluation |
+| Meta-enhanced gene and pathway analysis | `09` | FinnGen plus Bradley Age65 fixed-effect IVW meta-analysis |
+| Single-nucleus transcriptomic context | `10` | GSE272082 cell-type reconstruction, pseudobulk analysis and candidate pathway context |
 
-### GWAS Summary Statistics
+The manuscript methods describe harmonized clinical expression before independent replication because it is a prespecified phenotype layer. The results place the clinical expression results after genetic replication and molecular context so that the clinical analyses are interpreted as translational contextualization rather than as a substitute for EOAD genetic replication.
 
-- FinnGen Release 11 `AD_EO_EXMORE` summary statistics for EOAD.
-- EADB stage I AD/ADRD meta-analysis summary statistics.
-- Bradley/Pottier 2025 non-Hispanic White Age65 and Age70 EOAD summary statistics.
-- Multivariate healthspan, parental lifespan, and longevity summary statistics.
-- UK Biobank Oxford BIG40 imaging-genetics summary statistics for white matter microstructure.
+## Analysis order
 
-The Bradley/Pottier input files used by modules 07 to 09 are expected to follow the source-study base model:
+Run the modules in this order after configuring local paths:
 
-```text
-NHW_Age65_sumstats_base_model_SNP-SEX-10PCs-Array.txt
-NHW_Age70_sumstats_base_model_SNP-SEX-10PCs-Array.txt
+```r
+source("config.R")
+source("00_preflight.R")
+
+source("01. EOAD_EADB_Pathway_Discovery.R")
+source("02. PRS_LDpred2_Analysis.R")
+source("03. ADNI_Validation.R")
+source("04_1. A4_HABS-HD_AIBL_Validation.R")
+source("04_2. Harmonized Clinical Expression Across Alzheimer Disease Stages.R")
+source("05_1. EOAD Internal Robustness Analyses.R")
+source("05_2. WMH Sensitivity Analyses.R")
+source("06. Concordance and Phenotype-Level Contextualization Framework.R")
+source("07. Bradley 2025 EOAD GWAS Replication.R")
+source("08. Bradley 2025 SNP_Locus-Level Replication.R")
+source("09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis.R")
+source("10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation.R")
 ```
 
-### Reference Resources
+Modules `01` to `06` contain functions and documented entry points. Modules `07` to `10` contain executable workflows. Module `04_2` is executable and runs the complete harmonized clinical-expression layer through one call.
 
-- MAGMA executable.
-- 1000 Genomes Phase 3 European reference panel.
-- MAGMA gene-location file matched to the target genomic build.
-- Gene-set annotations from the selected MSigDB release.
-- GRCh38-to-GRCh37 chain file when Bradley coordinates require liftOver.
-- `SNPlocs.Hsapiens.dbSNP155.GRCh37` for coordinate-to-rsID mapping.
-- HapMap3+ European linkage disequilibrium reference for LDpred2.
+## Configuration
 
-### Clinical and Transcriptomic Resources
-
-- ADNI genotype, magnetic resonance imaging, white matter hyperintensity, cerebrospinal fluid biomarker, APOE, diagnosis, and longitudinal follow-up data.
-- A4, HABS, and AIBL phenotype data used under the corresponding data-use agreements.
-- GTEx v8 S-PrediXcan prediction models and brain-tissue outputs.
-- LIBD human hippocampal spatial transcriptomic data.
-- Maynard et al. dorsolateral prefrontal cortex spatial transcriptomic data.
-- GSE272082 filtered single-nucleus expression matrices and sample metadata.
-
-## Local Configuration
-
-Local paths should be supplied through environment variables rather than hard-coded manuscript paths.
-
-Copy `config_template.R` to an untracked local file named `config.R`, edit the
-paths, and run the preflight before any analysis:
+Copy `config_template.R` to an untracked file named `config.R` and edit the local paths. Do not commit `config.R` when it contains controlled-access locations.
 
 ```r
 source("config.R")
 source("00_preflight.R")
 ```
 
-The repository does not redistribute controlled-access participant data, GWAS
-summary statistics, MAGMA reference files, or S-PrediXcan models. A complete
-analysis run therefore requires authorized local copies of the inputs listed
-below. The preflight verifies package availability, required environment
-variables, input paths, and the MAGMA reference prefix.
+The configuration uses the following variables.
 
-`config_template.R` derives standard data and results locations from
-`EOAD_PROJECT_DIR`. Edit the template only when a resource is stored elsewhere.
-The local `config.R` file is excluded from version control to prevent accidental
-publication of controlled-access paths.
+| Variable | Purpose |
+|---|---|
+| `EOAD_PROJECT_DIR` | Root directory for local data, results and reference resources |
+| `EOAD_DATA_DIR` | Local data directory |
+| `EOAD_RESULTS_DIR` | Results directory |
+| `FINNGEN_EOAD_SUMSTATS` | FinnGen EOAD summary statistics |
+| `EADB_ADRD_SUMSTATS` | EADB stage I AD and ADRD summary statistics |
+| `BRADLEY_RAW_DIR` | Bradley and Pottier input directory |
+| `MAGMA_EXE` | MAGMA executable |
+| `MAGMA_BFILE` | MAGMA reference genotype prefix |
+| `MAGMA_GENE_LOC` | MAGMA gene-location file |
+| `MAGMA_SET_ANNOT` | MAGMA gene-set annotation file |
+| `HG38_TO_HG19_CHAIN` | Coordinate conversion chain when required |
+| `GSE272082_DATA_DIR` | GSE272082 expression and metadata directory |
+| `EOAD_A4_INTEGRATED_FILE` | Subject-level A4 integrated file for harmonized clinical expression |
+| `EOAD_HABS_HD_INTEGRATED_FILE` | Subject-level HABS-HD integrated file |
+| `EOAD_AIBL_INTEGRATED_FILE` | AIBL integrated longitudinal file |
+| `EOAD_ADNI_CENTILOID_FILE` | ADNI Centiloid analysis file |
+| `EOAD_ADNI_ADAS13_FILE` | ADNI ADAS13 analysis file |
+| `EOAD_ADNI_WMH_FILE` | ADNI WMH derivative file |
 
-## Software Dependencies
+The clinical module accepts CSV and TSV files. Values coded as empty strings, `NA`, `N/A`, `-999` or `-99` are treated as missing.
+
+## Clinical input requirements
+
+The harmonized clinical module requires the following columns in the integrated cohort files.
+
+### A4
+
+`BID`, `Centiloid`, `Log_WMH`, `PACC`, `Age`, `Gender`, `Education`, and `APOE4_Carrier`.
+
+### HABS-HD
+
+`Med_ID`, `pTau217`, `Log_WMH`, `MMSE`, `Age`, `Gender`, `Education`, and `APOE4_Carrier`.
+
+The integrated HABS-HD `pTau217` field is treated as the supplied transformed or standardized scale. The script does not apply a second logarithmic transformation.
+
+### ADNI
+
+The Centiloid and ADAS13 files require `RID`, `date`, `Centiloid`, `baseline_age`, `sex`, `education`, `APOE4`, `baseline_dx`, and `time`. The WMH file requires `RID`, `EXAMDATE`, and `TOTAL_WMH`.
+
+ADAS13 and WMH observations are matched to the closest compatible visit within the prespecified windows of 90 and 180 days, respectively. ADNI longitudinal models retain a participant-level random intercept and adjust for time and baseline diagnosis.
+
+### AIBL
+
+The AIBL audit expects an identifier column and the longitudinal `Time` and `Event` fields. AIBL is included in the shared pathology model only when the integrated file also contains a quantitative pathology field and a compatible WMH field. With the current integrated file, it remains a longitudinal conversion benchmark.
+
+## Harmonized clinical-expression module
+
+Run the complete layer with:
+
+```r
+source("04_2. Harmonized Clinical Expression Across Alzheimer Disease Stages.R")
+```
+
+The module executes four linked components.
+
+### Component 1: harmonized primary models
+
+The primary question is how pathology burden relates to cognitive impairment after adjustment for age, sex, education and APOE ε4 carrier status.
+
+The three prespecified layers are:
+
+```text
+cognition impairment ~ pathology burden + covariates
+cognition impairment ~ pathology burden * WMH + covariates
+cognition impairment ~ pathology burden * age + covariates
+```
+
+All continuous variables are z-standardized within cohort and the cognitive outcome is oriented so that larger values indicate greater impairment. A4 and ADNI use Centiloid as the amyloid measure. HABS-HD uses p-tau217 as a downstream pathology marker and is reported separately from the Centiloid-only comparison.
+
+The primary cross-sectional models use one complete observation per participant. ADNI observations are ordered by participant and pathology date before the first eligible observation is retained for the participant-level model.
+
+HC3 robust standard errors are used for the primary linear models. The script writes the complete-case sample size, coefficient, standard error, confidence interval, nominal P value, model status and within-layer FDR-adjusted P value.
+
+### Component 2: ADNI longitudinal sensitivity
+
+ADNI longitudinal observations are matched to cognition and WMH measurements using the same visit windows. The random-intercept models include time, baseline age, baseline diagnosis, sex, education and APOE ε4. These models provide longitudinal sensitivity evidence and are not presented as EOAD-specific replication.
+
+### Component 3: stage and common-support heterogeneity
+
+The A4 to ADNI difference is evaluated using prespecified clinical-stage and age-support analyses. ADNI is summarized across baseline CN, EMCI, LMCI and AD groups, with a cognitively normal sensitivity analysis and a common 65 to 85 year range. The analysis reports cohort-specific slopes, pairwise contrasts and I-squared values. No sliding age windows, data-driven cohort removal or two-study meta-regression is used.
+
+### Component 4: bounded diagnostic sensitivity and Figure 6
+
+The validation layer evaluates baseline-diagnosis adjustment, stage-matched cognitively normal analyses, common-age analyses, quadratic pathology terms and standardized-residual influence checks. It reports whether the pathology main effect changes by more than 20 percent after influence filtering and whether the quadratic term is supported.
+
+The Figure 6 script uses the covariate-aligned pathology main effects and partial-residual summaries. It writes PDF, SVG, PNG and TIFF files under `results/clinical_expression_figures`. It does not write to a manuscript directory.
+
+## Clinical interpretation boundaries
+
+The harmonized clinical layer supports the following interpretation.
+
+- A4 and ADNI provide compatible Centiloid-based amyloid-to-cognition estimates.
+- HABS-HD provides an independent community-sample p-tau217-to-cognition context using a different pathology scale.
+- AIBL provides longitudinal clinical conversion context when quantitative pathology and WMH are unavailable.
+- WMH interactions are reported with cohort-specific estimates and heterogeneity. They are not promoted to a universal modifier without consistent support in compatible cohorts.
+- Age interactions are reported as prespecified continuous interactions and bounded support analyses. Sliding-window positives are not used as primary evidence.
+- The clinical layer characterizes clinical expression of Alzheimer pathology. It does not constitute direct replication of the EOAD genetic pathways.
+
+## Main outputs
+
+Module `04_2` writes the following result directories below `EOAD_RESULTS_DIR`.
+
+### `clinical_expression`
+
+```text
+primary_three_layers_HC3.tsv
+ADNI_longitudinal_time_adjusted.tsv
+meta_three_layers.tsv
+clinical_evidence_gates.tsv
+AIBL_role_audit.tsv
+source_cohort_sizes.tsv
+sessionInfo.txt
+```
+
+### `clinical_expression_heterogeneity`
+
+```text
+pathology_cognition_stage_estimates.tsv
+prespecified_slope_contrasts.tsv
+heterogeneity_stage_common_support.tsv
+WMH_interaction_context.tsv
+age_interaction_context.tsv
+heterogeneity_decisions.tsv
+sessionInfo.txt
+```
+
+### `clinical_expression_validation`
+
+```text
+covariate_aligned_models.tsv
+ADNI_CN_stage_matched.tsv
+primary_model_diagnostics.tsv
+analysis_decisions.tsv
+sessionInfo.txt
+```
+
+### `clinical_expression_figures`
+
+```text
+Figure_6.pdf
+Figure 6.svg
+Figure 6.png
+Figure 6.tiff
+Figure6_panel_A_source.tsv
+Figure6_panels_B_D_source.tsv
+Figure6_panel_E_source.tsv
+Figure6_panel_F_source.tsv
+sessionInfo.txt
+```
+
+## Existing supplementary analyses
+
+Module `04_1` remains in the repository because the manuscript retains the original cohort-specific phenotype context in the supplementary material. It covers A4 WMH-cognition association, HABS-HD WMH and p-tau217 analyses, mediation and structural equation models, age-stratified context, clinical utility diagnostics, and AIBL APOE progression. Those analyses are interpreted as phenotype context and are separate from the harmonized primary model in `04_2`.
+
+## Earlier modules
+
+### `01. EOAD_EADB_Pathway_Discovery.R`
+
+Reads FinnGen EOAD and EADB results and evaluates MAGMA gene-level associations, gene-set enrichment, cell-type gene-property models and effective-sample-size sensitivity analyses.
+
+### `02. PRS_LDpred2_Analysis.R`
+
+Fits LDpred2 scores, constructs pathway-specific scores, evaluates APOE-region exclusion and runs configured S-PrediXcan analyses. Pathway scores are burden metrics based on posterior SNP weights near pathway genes and must be interpreted with LD structure in mind.
+
+### `03. ADNI_Validation.R`
+
+Projects pathway-specific genetic scores into ADNI and tests imaging, CSF biomarker, cognition and progression phenotypes. These models are distinct from the harmonized pathology-expression models in `04_2`.
+
+### `05_1. EOAD Internal Robustness Analyses.R`
+
+Evaluates detectable effects, leave-one-gene sensitivity, APOE and MHC exclusion and matched random gene-set permutations.
+
+### `05_2. WMH Sensitivity Analyses.R`
+
+Evaluates scanner, field-strength, manufacturer and acquisition sensitivity within ADNI imaging analyses.
+
+### `06. Concordance and Phenotype-Level Contextualization Framework.R`
+
+Separates genome-wide discovery, published gene-set concordance, phenotype-level context and the targeted boundary analyses.
+
+### `07. Bradley 2025 EOAD GWAS Replication.R`
+
+Harmonizes coordinates and alleles and evaluates the prespecified FinnGen findings in Bradley and Pottier Age65, with Age70 sensitivity analysis.
+
+### `08. Bradley 2025 SNP_Locus-Level Replication.R`
+
+Performs LD-clumped locus comparisons, direction testing, exact-variant or proxy evaluation and separate APOE-region indexing.
+
+### `09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis.R`
+
+Performs fixed-effect inverse-variance meta-analysis followed by gene-level and pathway-level MAGMA analyses.
+
+### `10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation.R`
+
+Reconstructs major cell classes, aggregates donor-level pseudobulk counts and evaluates candidate pathway expression context across region and cell type.
+
+## Software requirements
 
 Core R packages include:
 
@@ -115,243 +308,31 @@ Core R packages include:
 install.packages(c(
   "data.table", "dplyr", "tidyr", "readr", "stringr", "tibble", "purrr",
   "ggplot2", "ggrepel", "scales", "forcats", "broom", "survival",
-  "lmtest", "sandwich", "pROC", "cowplot", "RColorBrewer",
-  "bigsnpr", "bigstatsr"
+  "lmtest", "sandwich", "pROC", "cowplot", "RColorBrewer", "bigsnpr",
+  "bigstatsr", "nlme", "patchwork", "svglite", "ragg"
 ))
 ```
 
-Selected Bioconductor packages include:
+The discovery and transcriptomic modules also require the Bioconductor packages listed by `00_preflight.R`, together with MAGMA, S-PrediXcan and their reference resources where applicable.
 
-```r
-if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager")
-}
+## Reproducibility safeguards
 
-BiocManager::install(c(
-  "GenomicRanges", "IRanges", "rtracklayer", "BSgenome",
-  "SNPlocs.Hsapiens.dbSNP155.GRCh37", "clusterProfiler",
-  "org.Hs.eg.db", "enrichplot", "ComplexHeatmap", "edgeR"
-))
-```
+- Freeze FinnGen-defined pathways before testing Bradley Age65.
+- Record the number of variants and genes before and after coordinate harmonization.
+- Use one APOE-region index variant for locus-level summaries.
+- Keep pathology scales separate when their biological measurements differ.
+- Report complete-case sample sizes for each model rather than treating them as the cohort total.
+- Preserve cohort-specific estimates when heterogeneity is substantial.
+- Treat unavailable AIBL pathology or WMH fields as unavailable rather than silently dropping the cohort.
+- Record `sessionInfo()` in every clinical output directory.
 
-Additional software includes MAGMA, S-PrediXcan, and the reference resources required by each program.
+## Data availability
 
-## Analysis Modules
-
-### 01. EOAD Pathway Discovery Against the EADB AD/ADRD Reference
-
-```r
-source("01. EOAD_EADB_Pathway_Discovery.R")
-```
-
-Module 01 reads FinnGen EOAD and EADB AD/ADRD MAGMA results and performs:
-
-- MAGMA gene-level association summaries.
-- Glial module enrichment.
-- Gene Ontology Biological Process gene set enrichment analysis.
-- Cell-type gene-property analysis.
-- Conditional immune-cell models adjusted for microglial expression.
-- Effective-sample-size attenuation of EADB summary statistics as a descriptive power-sensitivity analysis.
-
-The module compares enrichment profiles. The EADB resource represents a broader AD/ADRD reference because contributing cohorts did not apply a uniform age-at-onset threshold.
-
-### 02. LDpred2 Polygenic Architecture and Transcriptome-Wide Association Analysis
-
-```r
-source("02. PRS_LDpred2_Analysis.R")
-```
-
-Module 02 performs:
-
-- LDpred2-auto chain fitting and posterior effect aggregation.
-- Genome-wide and pathway-specific score construction.
-- APOE-region exclusion sensitivity analysis.
-- S-PrediXcan analysis across GTEx v8 brain tissues.
-- Leave-one-gene, locus-exclusion, and matched gene-set sensitivity analyses where configured.
-
-Pathway-specific scores are approximate burden metrics derived by retaining posterior SNP weights near pathway genes. Interpretation should account for linkage disequilibrium between pathway and non-pathway variants.
-
-### 03. ADNI Individual-Level Phenotype Evaluation
-
-```r
-source("03. ADNI_Validation.R")
-```
-
-Module 03 projects pathway-specific scores into ADNI and evaluates associations with:
-
-- Structural magnetic resonance imaging measures.
-- White matter hyperintensity volume.
-- Cerebrospinal fluid amyloid, tau, phosphorylated tau, and sTREM2.
-- Mild cognitive impairment-to-dementia conversion.
-- Age-stratified and continuous age-interaction models.
-- Scanner-aware imaging sensitivity analyses.
-
-ADNI analyses focus on continuous pathway-score associations with imaging, biomarker, and progression phenotypes. Continuous score models carry greater inferential weight than exploratory PRS profiles or extreme-group contrasts.
-
-### 04. A4, HABS, and AIBL Phenotype-Level Context
-
-```r
-source("04. A4_HABS_AIBL_Validation.R")
-```
-
-Module 04 evaluates:
-
-- White matter hyperintensity volume and cognition in A4.
-- White matter hyperintensity volume, plasma p-tau217, and cognition in HABS.
-- APOE epsilon 4 and clinical progression in AIBL.
-- Participant flow and sensitivity to influential observations.
-
-A4, HABS, and AIBL extend phenotype-level context through white matter, biomarker, cognition, and progression analyses.
-
-### 05_1. EOAD Internal Robustness Analyses
-
-```r
-source("05_1. EOAD Internal Robustness Analyses.R")
-```
-
-Analyses include minimum detectable effects, leave-one-gene sensitivity, APOE and MHC exclusion, and matched random gene-set permutation. The resulting estimates quantify uncertainty arising from the modest effective sample size of FinnGen EOAD.
-
-### 05_2. White Matter Hyperintensity Sensitivity Analyses
-
-```r
-source("05_2. WMH Sensitivity Analyses.R")
-```
-
-Analyses include field-strength, manufacturer, scanner-model, and acquisition-related sensitivity checks that evaluate imaging robustness within ADNI.
-
-### 06. Concordance, Phenotype Context, and Boundary Analyses
-
-```r
-source("06. Concordance and Phenotype-Level Contextualization Framework.R")
-```
-
-Module 06 separates:
-
-- Genome-wide discovery in FinnGen EOAD and EADB AD/ADRD.
-- Concordance with published Bradley/Pottier evidence classes.
-- Phenotype-level analyses in ADNI, A4, HABS, and AIBL.
-- Targeted 44-gene oligodendrocyte and myelin boundary analyses.
-
-The restricted 44-gene results remain supplementary because matched permutation, single-cell eQTL colocalization, and SMR or HEIDI screening did not support a concentrated candidate-gene mechanism.
-
-### 07. Bradley/Pottier EOAD External Genetic Replication
-
-```r
-source("07. Bradley 2025 EOAD GWAS Replication.R")
-```
-
-Age65 supplies the primary external EOAD dataset, and Age70 supplies sensitivity analysis. The module performs coordinate harmonization, rsID mapping, MAGMA gene analysis, genome-wide gene-set concordance, and same-method testing of the five pathways prespecified from FinnGen EOAD discovery.
-
-Age65 supported amyloid-beta clearance and negative regulation of amyloid precursor protein catabolism after false discovery rate correction. Age70 supported all five pathways in sensitivity analysis. The primary replication claim is restricted to the Age65-supported findings.
-
-### 08. Bradley/Pottier SNP and Locus Replication
-
-```r
-source("08. Bradley 2025 SNP_Locus-Level Replication.R")
-```
-
-Module 08 performs:
-
-- Allele harmonization between FinnGen and Bradley/Pottier.
-- Linkage disequilibrium clumping of FinnGen EOAD variants.
-- Direction testing across independent non-APOE loci.
-- Exact-variant or highest-linkage-disequilibrium-proxy evaluation.
-- Separate summary of the APOE region through one index variant.
-
-Among 25 represented non-APOE loci, 14 had concordant directions in Age65. The directional test was not significant. rs56368748 replicated after correction, and rs405509 supplied strong APOE-region support.
-
-### 09. FinnGen EOAD and Bradley Age65 Meta-Enhanced Analysis
-
-```r
-source("09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis.R")
-```
-
-Module 09 performs allele harmonization, fixed-effect inverse-variance meta-analysis, Cochran Q and I-squared calculations, MAGMA gene analysis, and same-method evaluation of the five FinnGen-defined pathways.
-
-Following external evaluation, the meta-analysis increases statistical resolution through combined FinnGen and Bradley evidence.
-
-### 10. GSE272082 Single-Nucleus Transcriptomic Context
-
-```r
-source("10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation.R")
-```
-
-Module 10 reads filtered 10x expression matrices, reconstructs major cell classes using the original-study marker framework, applies confidence filtering, aggregates donor-level pseudobulk expression, and tests candidate pathway shifts across brain region and cell type.
-
-The resulting signals provide region-resolved and cell-type-resolved transcriptomic context, with inference restricted to pathway expression patterns across the available donors.
-
-## Recommended Run Order
-
-Modules 01 to 06 define reusable functions when sourced. Call the documented
-top-level function shown in each module's example block after sourcing the file.
-Modules 07 to 10 contain executable workflows and require the configured inputs
-and upstream outputs described below. A successful preflight confirms the local
-environment but does not replace cohort-specific access approval.
-
-```r
-source("01. EOAD_EADB_Pathway_Discovery.R")
-source("02. PRS_LDpred2_Analysis.R")
-source("03. ADNI_Validation.R")
-source("04. A4_HABS_AIBL_Validation.R")
-source("05_1. EOAD Internal Robustness Analyses.R")
-source("05_2. WMH Sensitivity Analyses.R")
-source("06. Concordance and Phenotype-Level Contextualization Framework.R")
-source("07. Bradley 2025 EOAD GWAS Replication.R")
-source("08. Bradley 2025 SNP_Locus-Level Replication.R")
-source("09. FinnGen EOAD + Bradley Age65 IVW Meta-Enhanced MAGMA Analysis.R")
-source("10. GSE272082 Orthogonal Single-Nucleus Transcriptomic Validation.R")
-```
-
-Module 08 uses harmonized Bradley inputs prepared by module 07. Module 09 uses the Bradley Age65 input generated or validated by module 07. Module 10 is independent of modules 07 to 09.
-
-## EADB Comparator Labels
-
-Internal objects and exported fields use `EADB`, including names such as `EADB_Microglia` and `PRS_EADB_*`. Plot labels, table titles, legends, captions, and exported manuscript-facing fields use the following mapping:
-
-```r
-trait_display <- c(
-  EOAD = "FinnGen EOAD",
-  EADB = "EADB AD/ADRD comparator",
-  Aging = "Multivariate aging"
-)
-
-display_trait <- function(x) {
-  dplyr::recode(as.character(x), !!!trait_display, .default = as.character(x))
-}
-```
-
-Use `EOAD minus EADB comparator` for difference scores and `effective-sample-size-attenuated EADB comparator` for the deterministic power-sensitivity analysis.
-
-## Interpretation Boundaries
-
-Supported manuscript language includes:
-
-- Bradley/Pottier Age65 supplied independent EOAD summary-statistics replication.
-- Age70 supplied a broader sensitivity analysis.
-- FinnGen plus Age65 meta-analysis increased power for gene and pathway analysis.
-- GSE272082 supplied single-nucleus transcriptomic context.
-- ADNI supplied individual-level phenotype evaluation of pathway-specific scores.
-- A4, HABS, and AIBL extended phenotype-level context.
-
-## Reproducibility Notes
-
-- Set local paths with `Sys.setenv()`.
-- Preserve the source genomic build and record each liftOver step.
-- Report variant counts before and after coordinate and rsID harmonization.
-- Use linkage disequilibrium-independent loci for directional replication tests.
-- Represent the APOE region with a single index variant in locus-level summaries.
-- Freeze FinnGen-defined replication pathways before testing Bradley Age65.
-- Record the multiple-testing family used for each analysis.
-- Report unavailable optional inputs as unavailable rather than omitting the corresponding output silently.
-- Confirm pathway SNP coverage before interpreting a pathway-specific score.
-
-## Data Availability
-
-FinnGen, EADB, Bradley/Pottier, GTEx, LIBD, GSE272082, and the imaging-genetics resources are available through their original repositories or consortium portals. ADNI, A4, HABS, and AIBL data require approval under their respective access procedures. Controlled-access participant data are excluded from the repository.
+FinnGen, EADB, Bradley and Pottier, GTEx, LIBD, GSE272082 and imaging-genetics resources are obtained from their original repositories or consortium portals. ADNI, A4, HABS-HD and AIBL require approval under their respective data-use procedures. No controlled-access participant data are included here.
 
 ## Citation
 
-Please cite the associated manuscript and the original data resources used by each analysis, including FinnGen, EADB, Bradley/Pottier 2025, ADNI, A4, HABS, AIBL, GTEx, LIBD, Maynard et al. dorsolateral prefrontal cortex spatial transcriptomics, and GSE272082.
+Please cite the associated manuscript and the original data resources used by each module, including FinnGen, EADB, Bradley and Pottier, ADNI, A4, HABS-HD, AIBL, GTEx, LIBD, Maynard et al. dorsolateral prefrontal cortex spatial transcriptomics and GSE272082.
 
 ## License
 
