@@ -39,5 +39,23 @@ Sys.setenv(
   MAGMA_SET_ANNOT = file.path(
     project_dir, "data", "reference", "magma", "MSigDB_20231Hs_MAGMA.txt"
   ),
-  GSE272082_DATA_DIR = file.path(project_dir, "data", "GSE272082")
+  GSE272082_DATA_DIR = file.path(project_dir, "data", "GSE272082"),
+  EOAD_A4_INTEGRATED_FILE = file.path(
+    project_dir, "data", "A4", "A4_Integrated_Data.csv"
+  ),
+  EOAD_HABS_HD_INTEGRATED_FILE = file.path(
+    project_dir, "data", "HABS_HD", "HABS_HD_Integrated_Data.csv"
+  ),
+  EOAD_AIBL_INTEGRATED_FILE = file.path(
+    project_dir, "data", "AIBL", "AIBL_Integrated_Data.csv"
+  ),
+  EOAD_ADNI_CENTILOID_FILE = file.path(
+    project_dir, "data", "ADNI", "ADNI_Centiloid_analysis_data.tsv"
+  ),
+  EOAD_ADNI_ADAS13_FILE = file.path(
+    project_dir, "data", "ADNI", "ADNI_ADAS13_analysis_data.tsv"
+  ),
+  EOAD_ADNI_WMH_FILE = file.path(
+    project_dir, "data", "ADNI", "UCD_WMH.csv"
+  )
 )
