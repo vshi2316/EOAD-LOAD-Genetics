@@ -2,7 +2,7 @@ required_packages <- c(
   "data.table", "dplyr", "tidyr", "readr", "stringr", "tibble", "purrr",
   "ggplot2", "ggrepel", "scales", "forcats", "broom", "survival",
   "lmtest", "sandwich", "pROC", "cowplot", "RColorBrewer", "bigsnpr",
-  "bigstatsr", "GenomicRanges", "IRanges", "rtracklayer", "BSgenome",
+  "bigstatsr", "nlme", "patchwork", "svglite", "ragg", "GenomicRanges", "IRanges", "rtracklayer", "BSgenome",
   "SNPlocs.Hsapiens.dbSNP155.GRCh37", "clusterProfiler", "org.Hs.eg.db",
   "enrichplot", "ComplexHeatmap", "edgeR"
 )
