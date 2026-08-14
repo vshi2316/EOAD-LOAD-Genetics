@@ -542,6 +542,6 @@ run_adni_scanner_aware_sensitivity <- function(
 #   freesurfer_metadata_file =
 #     "data/ADNI/data/MRI/MRI_FreeSurfer.csv",
 #   ucd_wmh_metadata_file =
-#     "data/ADNI/data/MRI/UCD_WMH_03Jan2026.csv",
+#     "data/ADNI/white_matter_hyperintensity.csv",
 #   output_dir = "results/adni_scanner_sensitivity"
 # )
