@@ -1,61 +1,23 @@
-# Copy this file to config.R, replace the example paths, and source it before
-# running analysis modules. Do not commit controlled-access paths or credentials.
-
-project_dir <- normalizePath(
-  Sys.getenv("EOAD_PROJECT_DIR", unset = getwd()),
-  winslash = "/",
-  mustWork = FALSE
-)
-magma_executable <- Sys.getenv(
-  "MAGMA_EXE",
-  unset = file.path(project_dir, "tools", "magma", "magma")
-)
+# Copy this file to config.R and enter the locations of controlled-access data.
 
 Sys.setenv(
-  EOAD_PROJECT_DIR = project_dir,
-  EOAD_DATA_DIR = file.path(project_dir, "data"),
-  EOAD_RESULTS_DIR = file.path(project_dir, "results"),
-  FINNGEN_EOAD_SUMSTATS = file.path(
-    project_dir, "data", "GWAS", "finngen_R11_AD_EO_EXMORE.gz"
-  ),
-  EADB_ADRD_SUMSTATS = file.path(
-    project_dir, "data", "GWAS", "EADB_stage1_AD_ADRD.tsv.gz"
-  ),
-  BRADLEY_RAW_DIR = file.path(
-    project_dir, "data", "Bradley_Pottier_2025"
-  ),
-  BRADLEY_BUILD = "hg38",
-  TARGET_MAGMA_BUILD = "hg19",
-  HG38_TO_HG19_CHAIN = file.path(
-    project_dir, "data", "reference", "hg38ToHg19.over.chain.gz"
-  ),
-  MAGMA_EXE = magma_executable,
-  MAGMA_BFILE = file.path(
-    project_dir, "data", "reference", "magma", "g1000_eur", "g1000_eur"
-  ),
-  MAGMA_GENE_LOC = file.path(
-    project_dir, "data", "reference", "magma", "ENSGv110.coding.genes.txt"
-  ),
-  MAGMA_SET_ANNOT = file.path(
-    project_dir, "data", "reference", "magma", "MSigDB_20231Hs_MAGMA.txt"
-  ),
-  GSE272082_DATA_DIR = file.path(project_dir, "data", "GSE272082"),
-  EOAD_A4_INTEGRATED_FILE = file.path(
-    project_dir, "data", "A4", "A4_Integrated_Data.csv"
-  ),
-  EOAD_HABS_HD_INTEGRATED_FILE = file.path(
-    project_dir, "data", "HABS_HD", "HABS_HD_Integrated_Data.csv"
-  ),
-  EOAD_AIBL_INTEGRATED_FILE = file.path(
-    project_dir, "data", "AIBL", "AIBL_Integrated_Data.csv"
-  ),
-  EOAD_ADNI_CENTILOID_FILE = file.path(
-    project_dir, "data", "ADNI", "ADNI_Centiloid_analysis_data.tsv"
-  ),
-  EOAD_ADNI_ADAS13_FILE = file.path(
-    project_dir, "data", "ADNI", "ADNI_ADAS13_analysis_data.tsv"
-  ),
-  EOAD_ADNI_WMH_FILE = file.path(
-    project_dir, "data", "ADNI", "UCD_WMH.csv"
-  )
+  EOAD_DATA_DIR = file.path(getwd(), "data"),
+  EOAD_RESULTS_DIR = file.path(getwd(), "results"),
+  HABS_DATA_DIR = file.path(getwd(), "data", "HABS_HD"),
+  HABS_FBB_FILE = file.path(getwd(), "data", "HABS_HD", "FBB_PET.xlsx"),
+  HABS_TAU_FILE = file.path(getwd(), "data", "HABS_HD", "PI2620_PET.xlsx"),
+  HABS_CORTICAL_THICKNESS_FILE = file.path(getwd(), "data", "HABS_HD", "cortical_thickness.xlsx"),
+  HABS_GENOMICS_FILE = file.path(getwd(), "data", "HABS_HD", "genomics.xlsx"),
+  HABS_DIAGNOSIS_FILE = file.path(getwd(), "data", "HABS_HD", "diagnosis.csv"),
+  HABS_DEMOGRAPHICS_FILE = file.path(getwd(), "data", "HABS_HD", "demographics.csv"),
+  HABS_COGNITION_FILE = file.path(getwd(), "data", "HABS_HD", "cognition_zscores.csv"),
+  HABS_MMSE_FILE = file.path(getwd(), "data", "HABS_HD", "mmse.csv"),
+  HABS_EDUCATION_FILE = file.path(getwd(), "data", "HABS_HD", "education.csv"),
+  PLINK_EXE = "plink",
+  ADNI_PLINK_PREFIX = file.path(getwd(), "data", "ADNI", "genotype", "adni_qc"),
+  ADNI_PATHWAY_WEIGHT_FILE = file.path(getwd(), "data", "ADNI", "pathway_score_weights.tsv"),
+  ADNI_CENTILOID_COVARIATE_FILE = file.path(getwd(), "data", "ADNI", "ADNI_Centiloid_covariates.tsv.gz"),
+  ADNI_PATHWAY_ANALYSIS_FILE = file.path(getwd(), "data", "ADNI", "ADNI_pathway_PRS_Centiloid.tsv.gz"),
+  A4_CLINICAL_ANALYSIS_FILE = file.path(getwd(), "data", "A4", "A4_Centiloid_PACC.tsv.gz"),
+  ADNI_CLINICAL_ANALYSIS_FILE = file.path(getwd(), "data", "ADNI", "ADNI_Centiloid_ADAS13.tsv.gz")
 )
