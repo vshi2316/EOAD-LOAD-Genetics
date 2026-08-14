@@ -234,7 +234,7 @@ sample_matched_z <- function(background_z, candidate_index_list) {
 }
 
 run_tissue_robustness <- function(tissue_name, twas_df, n_perm = 2000,
-                                  random_seed = 20260525) {
+                                  random_seed = 525) {
   set.seed(random_seed)
 
   df <- twas_df %>%
@@ -382,7 +382,7 @@ run_eoad_internal_robustness <- function(
     output_dir = "results/eoad_internal_robustness",
     eoad_effective_n = 1573,
     n_perm = 2000,
-    random_seed = 20260525) {
+    random_seed = 525) {
 
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -473,5 +473,5 @@ run_eoad_internal_robustness <- function(
 #   output_dir = "results/eoad_internal_robustness",
 #   eoad_effective_n = 1573,
 #   n_perm = 2000,
-#   random_seed = 20260525
+#   random_seed = 525
 # )
