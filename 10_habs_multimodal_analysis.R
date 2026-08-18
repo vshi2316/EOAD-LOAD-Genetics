@@ -14,7 +14,8 @@ modules <- c(
   "10_2_habs_longitudinal_cognition.R",
   "10_3_habs_cognition_models.R",
   "10_4_habs_primary_models.R",
-  "10_5_habs_regional_analysis.R"
+  "10_5_habs_regional_analysis.R",
+  "10_6_habs_age65_multimodal_interactions.R"
 )
 
 for (module in modules) {
