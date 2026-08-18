@@ -16,7 +16,7 @@ modules <- c(
   "09_adni_pathway_prs_analysis.R",
   "10_habs_multimodal_analysis.R",
   "11_clinical_expression.R",
-  "12_clinical_figures.R"
+  "13_manuscript_figures.R"
 )
 
 for (module in modules) {
